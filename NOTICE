@@ -1,0 +1,11 @@
+Third-party source kept in this repository (license headers stay in the files):
+
+  src/utils/uthash.h   uthash, Troy D. Hanson. BSD-style license.
+  src/utils/getline.c  getdelim and getline, The NetBSD Foundation. BSD-style license.
+
+Used at run time, not part of this repository:
+
+  WinDivert            https://github.com/basil00/WinDivert
+    Copyright basil00. Dual-licensed under LGPL-3.0 or GPL-2.0.
+    Builds load WinDivert.dll and WinDivert64.sys; the license text ships
+    with the WinDivert download.

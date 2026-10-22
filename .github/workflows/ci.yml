@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  WINDIVERT_URL: https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip
+  WINDIVERT_NAME: WinDivert-2.2.2-A.zip
+  WINDIVERT_BASENAME: WinDivert-2.2.2-A
+  WINDIVERT_SHA256: 63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64
+
+      - name: Download WinDivert
+        run: |
+          wget -q "$WINDIVERT_URL"
+          echo "$WINDIVERT_SHA256  $WINDIVERT_NAME" | sha256sum -c
+          unzip -q "$WINDIVERT_NAME"
+
+      - name: Build x86_64
+        run: >
+          cd src && make CPREFIX=x86_64-w64-mingw32- BIT64=1
+          WINDIVERTHEADERS=../$WINDIVERT_BASENAME/include
+          WINDIVERTLIBS=../$WINDIVERT_BASENAME/x64 -j4
+
+      - name: Build i686
+        run: >
+          cd src && make clean && make CPREFIX=i686-w64-mingw32-
+          WINDIVERTHEADERS=../$WINDIVERT_BASENAME/include
+          WINDIVERTLIBS=../$WINDIVERT_BASENAME/x86 -j4
