@@ -22,7 +22,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install MinGW-w64
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64
+        timeout-minutes: 8
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+            binutils-mingw-w64-x86-64 binutils-mingw-w64-i686 \
+            gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix \
+            mingw-w64-x86-64-dev mingw-w64-i686-dev
 
       - name: Download WinDivert
         run: |
@@ -32,12 +38,12 @@ jobs:
 
       - name: Build x86_64
         run: >
-          cd src && make CPREFIX=x86_64-w64-mingw32- BIT64=1
+          cd src && make CPREFIX=x86_64-w64-mingw32- CC=x86_64-w64-mingw32-gcc-posix BIT64=1
           WINDIVERTHEADERS=../$WINDIVERT_BASENAME/include
           WINDIVERTLIBS=../$WINDIVERT_BASENAME/x64 -j4
 
       - name: Build i686
         run: >
-          cd src && make clean && make CPREFIX=i686-w64-mingw32-
+          cd src && make clean && make CPREFIX=i686-w64-mingw32- CC=i686-w64-mingw32-gcc-posix
           WINDIVERTHEADERS=../$WINDIVERT_BASENAME/include
           WINDIVERTLIBS=../$WINDIVERT_BASENAME/x86 -j4
