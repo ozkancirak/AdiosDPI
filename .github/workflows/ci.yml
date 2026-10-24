@@ -13,6 +13,7 @@ env:
   WINDIVERT_NAME: WinDivert-2.2.2-A.zip
   WINDIVERT_BASENAME: WinDivert-2.2.2-A
   WINDIVERT_SHA256: 63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15
+  WERROR: -Werror=format -Werror=array-bounds -Werror=stringop-overflow -Werror=stringop-overread
 
 jobs:
   build:
@@ -38,12 +39,12 @@ jobs:
 
       - name: Build x86_64
         run: >
-          cd src && make CPREFIX=x86_64-w64-mingw32- CC=x86_64-w64-mingw32-gcc-posix BIT64=1
+          cd src && make CPREFIX=x86_64-w64-mingw32- CC="x86_64-w64-mingw32-gcc-posix $WERROR" BIT64=1
           WINDIVERTHEADERS=../$WINDIVERT_BASENAME/include
           WINDIVERTLIBS=../$WINDIVERT_BASENAME/x64 -j4
 
       - name: Build i686
         run: >
-          cd src && make clean && make CPREFIX=i686-w64-mingw32- CC=i686-w64-mingw32-gcc-posix
+          cd src && make clean && make CPREFIX=i686-w64-mingw32- CC="i686-w64-mingw32-gcc-posix $WERROR"
           WINDIVERTHEADERS=../$WINDIVERT_BASENAME/include
           WINDIVERTLIBS=../$WINDIVERT_BASENAME/x86 -j4
