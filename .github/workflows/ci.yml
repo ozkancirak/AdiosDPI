@@ -26,10 +26,12 @@ jobs:
         timeout-minutes: 8
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
-            binutils-mingw-w64-x86-64 binutils-mingw-w64-i686 \
-            gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix \
-            mingw-w64-x86-64-dev mingw-w64-i686-dev
+          pkgs="binutils-mingw-w64-x86-64 binutils-mingw-w64-i686 gcc-mingw-w64-x86-64-posix gcc-mingw-w64-i686-posix mingw-w64-x86-64-dev mingw-w64-i686-dev"
+          # The mirror is sometimes very slow. A new attempt often gets a fast one, and apt resumes partial downloads.
+          for i in 1 2 3; do
+            sudo timeout 90 apt-get install -y --no-install-recommends --download-only -o Acquire::Retries=3 $pkgs && break
+          done
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 $pkgs
 
       - name: Download WinDivert
         run: |
