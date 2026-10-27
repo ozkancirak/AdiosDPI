@@ -17,6 +17,7 @@
 #include "utils/repl_str.h"
 #include "service.h"
 #include "dnsredir.h"
+#include "dnscheck.h"
 #include "ttltrack.h"
 #include "blackwhitelist.h"
 #include "fakepackets.h"
@@ -179,6 +180,7 @@ static struct option long_options[] = {
     {"dnsv6-addr",  required_argument, 0,  '!' },
     {"dnsv6-port",  required_argument, 0,  '@' },
     {"dns-verb",    no_argument,       0,  'v' },
+    {"dns-check",   required_argument, 0,  'D' },
     {"blacklist",   required_argument, 0,  'b' },
     {"allow-no-sni",no_argument,       0,  ']' },
     {"frag-by-sni", no_argument,       0,  '>' },
@@ -634,6 +636,7 @@ int main(int argc, char *argv[]) {
     BYTE auto_ttl_2 = 0;
     BYTE auto_ttl_max = 0;
     uint32_t dnsv4_addr = 0;
+    const char *dns_check_domain = NULL;
     struct in6_addr dnsv6_addr = {0};
     struct in6_addr dns_temp_addr = {0};
     uint16_t dnsv4_port = htons(53);
@@ -796,6 +799,9 @@ int main(int argc, char *argv[]) {
                 if (i != 80 && i != 443)
                     add_filter_str(IPPROTO_TCP, i);
                 i = 0;
+                break;
+            case 'D': // --dns-check
+                dns_check_domain = optarg;
                 break;
             case 'i': // --ip-id
                 /* i is used as a temporary variable here */
@@ -995,6 +1001,8 @@ int main(int argc, char *argv[]) {
                 " --dnsv6-addr  <value>    redirect UDPv6 DNS requests to the supplied IPv6 address (experimental)\n"
                 " --dnsv6-port  <value>    redirect UDPv6 DNS requests to the supplied port (53 by default)\n"
                 " --dns-verb               print verbose DNS redirection messages\n"
+                " --dns-check   <domain>   compare the system DNS answer for the domain with a plain DNS server\n"
+                "                          (77.88.8.8 port 1253, or --dns-addr and --dns-port) and exit.\n"
                 " --blacklist   <txtfile>  perform circumvention tricks only to host names and subdomains from\n"
                 "                          supplied text file (HTTP Host/TLS SNI).\n"
                 "                          This option can be supplied multiple times.\n"
@@ -1054,6 +1062,10 @@ int main(int argc, char *argv[]) {
                 exit(ERROR_DEFAULT);
         }
     }
+
+    if (dns_check_domain)
+        return dns_check(dns_check_domain, do_dnsv4_redirect ? dnsv4_addr : 0,
+                         do_dnsv4_redirect ? dnsv4_port : 0);
 
     if (!http_fragment_size)
         http_fragment_size = 2;
