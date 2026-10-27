@@ -19,6 +19,7 @@
 #include "dnsredir.h"
 #include "dnscheck.h"
 #include "preset.h"
+#include "drvcheck.h"
 #include "ttltrack.h"
 #include "blackwhitelist.h"
 #include "fakepackets.h"
@@ -1163,6 +1164,12 @@ int main(int argc, char *argv[]) {
     if (max_payload_size)
         add_maxpayloadsize_str(max_payload_size);
     finalize_filter_strings(do_passivedpi);
+    {
+        char other[MAX_PATH];
+        if (other_windivert_user(other, sizeof(other)))
+            printf("\nWARNING: %s has WinDivert loaded. Two bypass tools at once can break connections;\n"
+                   "close it first if sites stop opening.\n", other);
+    }
     puts("\nOpening filter");
     filter_num = 0;
 
