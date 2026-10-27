@@ -76,7 +76,9 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
          ")" \
          " and (" DIVERT_NO_LOCALNETSv4_SRC " or " DIVERT_NO_LOCALNETSv6_SRC "))) or " \
         "(outbound and " \
-         "(tcp.DstPort == 80 or tcp.DstPort == 443) and tcp.Ack and tcp.PayloadLength > 0 and " \
+         /* On 443 only the first segment of a TLS handshake record is rewritten. */ \
+         "((tcp.DstPort == 443 and tcp.Payload[0] == 0x16 and tcp.Payload[1] == 0x03) or " \
+          "tcp.DstPort == 80) and tcp.Ack and tcp.PayloadLength > 0 and " \
          "(" DIVERT_NO_LOCALNETSv4_DST " or " DIVERT_NO_LOCALNETSv6_DST "))" \
         "))"
 #define FILTER_PASSIVE_BLOCK_QUIC "outbound and !impostor and !loopback and udp " \
