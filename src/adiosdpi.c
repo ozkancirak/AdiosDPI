@@ -675,6 +675,13 @@ int main(int argc, char *argv[]) {
     if (argv == NULL)
         exit(ERROR_DEFAULT);
 
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--install") == 0)
+            return service_install(argc, argv);
+        if (strcmp(argv[i], "--remove") == 0)
+            return service_remove();
+    }
+
     if (filter_string == NULL)
         filter_string = strdup(FILTER_STRING_TEMPLATE);
     if (filter_passive_string == NULL)
@@ -1010,6 +1017,9 @@ int main(int argc, char *argv[]) {
                 "                          (77.88.8.8 port 1253, or --dns-addr and --dns-port) and exit.\n"
                 " --preset      <name>     use a ready set of options: dns, dns-5 or dns-9.\n"
                 "                          Do not combine with --dns-addr or --dns-port.\n"
+                " --install                install AdiosDPI as a Windows service that starts with Windows, using the\n"
+                "                          other options given (use full paths for files), and start it.\n"
+                " --remove                 stop and remove the AdiosDPI service.\n"
                 " --blacklist   <txtfile>  perform circumvention tricks only to host names and subdomains from\n"
                 "                          supplied text file (HTTP Host/TLS SNI).\n"
                 "                          This option can be supplied multiple times.\n"
