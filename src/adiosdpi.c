@@ -63,6 +63,7 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
 /* #IPID# is a template to find&replace */
 #define IPID_TEMPLATE "#IPID#"
 #define MAXPAYLOADSIZE_TEMPLATE "#MAXPAYLOADSIZE#"
+#define PASSIVE_TEMPLATE "#PASSIVE#"
 #define FILTER_STRING_TEMPLATE \
         "(tcp and !impostor and !loopback " MAXPAYLOADSIZE_TEMPLATE " and " \
         "((inbound and (" \
@@ -70,7 +71,7 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
           "(" \
            "(ipv6 or (ip.Id >= 0x0 and ip.Id <= 0xF) " IPID_TEMPLATE \
            ") and " \
-           "tcp.SrcPort == 80 and tcp.Ack" \
+           PASSIVE_TEMPLATE "tcp.SrcPort == 80 and tcp.Ack" \
           ") or " \
           "((tcp.SrcPort == 80 or tcp.SrcPort == 443) and tcp.Ack and tcp.Syn)" \
          ")" \
@@ -254,14 +255,16 @@ static void add_maxpayloadsize_str(unsigned short maxpayload) {
     filter_string = newstr;
 }
 
-static void finalize_filter_strings() {
+static void finalize_filter_strings(int passive) {
     char *newstr, *newstr2;
 
     newstr2 = repl_str(filter_string, IPID_TEMPLATE, "");
     newstr = repl_str(newstr2, MAXPAYLOADSIZE_TEMPLATE, "");
-    free(filter_string);
     free(newstr2);
-    filter_string = newstr;
+    newstr2 = repl_str(newstr, PASSIVE_TEMPLATE, passive ? "" : "false and ");
+    free(newstr);
+    free(filter_string);
+    filter_string = newstr2;
 
     newstr = repl_str(filter_passive_string, IPID_TEMPLATE, "");
     free(filter_passive_string);
@@ -1130,7 +1133,7 @@ int main(int argc, char *argv[]) {
 
     if (max_payload_size)
         add_maxpayloadsize_str(max_payload_size);
-    finalize_filter_strings();
+    finalize_filter_strings(do_passivedpi);
     puts("\nOpening filter");
     filter_num = 0;
 
