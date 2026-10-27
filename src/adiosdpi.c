@@ -18,6 +18,7 @@
 #include "service.h"
 #include "dnsredir.h"
 #include "dnscheck.h"
+#include "preset.h"
 #include "ttltrack.h"
 #include "blackwhitelist.h"
 #include "fakepackets.h"
@@ -670,6 +671,10 @@ int main(int argc, char *argv[]) {
         running_from_service = 0;
     }
 
+    argv = preset_expand(&argc, argv);
+    if (argv == NULL)
+        exit(ERROR_DEFAULT);
+
     if (filter_string == NULL)
         filter_string = strdup(FILTER_STRING_TEMPLATE);
     if (filter_passive_string == NULL)
@@ -1003,6 +1008,8 @@ int main(int argc, char *argv[]) {
                 " --dns-verb               print verbose DNS redirection messages\n"
                 " --dns-check   <domain>   compare the system DNS answer for the domain with a plain DNS server\n"
                 "                          (77.88.8.8 port 1253, or --dns-addr and --dns-port) and exit.\n"
+                " --preset      <name>     use a ready set of options: dns, dns-5 or dns-9.\n"
+                "                          Do not combine with --dns-addr or --dns-port.\n"
                 " --blacklist   <txtfile>  perform circumvention tricks only to host names and subdomains from\n"
                 "                          supplied text file (HTTP Host/TLS SNI).\n"
                 "                          This option can be supplied multiple times.\n"
