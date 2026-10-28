@@ -9,7 +9,7 @@ MINGWLIB = /usr/x86_64-w64-mingw32/lib/
 TARGET = adiosdpi.exe
 # Linking SSP does not work for some reason, the executable doesn't start.
 #LIBS = -L$(WINDIVERTLIBS) -Wl,-Bstatic -lssp -Wl,-Bdynamic -lWinDivert -lws2_32
-LIBS = -L$(WINDIVERTLIBS) -lWinDivert -lws2_32 -l:libssp.a
+LIBS = -L$(WINDIVERTLIBS) -lWinDivert -lws2_32 -lwinhttp -l:libssp.a
 CC = $(CPREFIX)gcc
 
 CCWINDRES = $(CPREFIX)windres

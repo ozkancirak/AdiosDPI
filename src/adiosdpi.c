@@ -20,6 +20,7 @@
 #include "dnscheck.h"
 #include "preset.h"
 #include "drvcheck.h"
+#include "probe.h"
 #include "ttltrack.h"
 #include "blackwhitelist.h"
 #include "fakepackets.h"
@@ -681,6 +682,13 @@ int main(int argc, char *argv[]) {
             return service_install(argc, argv);
         if (strcmp(argv[i], "--remove") == 0)
             return service_remove();
+        if (strcmp(argv[i], "--probe") == 0) {
+            if (i + 1 >= argc) {
+                puts("--probe needs a domain name.");
+                return 1;
+            }
+            return probe(argv[i + 1]);
+        }
     }
 
     if (filter_string == NULL)
@@ -1021,6 +1029,8 @@ int main(int argc, char *argv[]) {
                 " --install                install AdiosDPI as a Windows service that starts with Windows, using the\n"
                 "                          other options given (use full paths for files), and start it.\n"
                 " --remove                 stop and remove the AdiosDPI service.\n"
+                " --probe       <domain>   try to open the site without any tool and then with each preset,\n"
+                "                          and say which one works. Needs a few seconds per candidate.\n"
                 " --blacklist   <txtfile>  perform circumvention tricks only to host names and subdomains from\n"
                 "                          supplied text file (HTTP Host/TLS SNI).\n"
                 "                          This option can be supplied multiple times.\n"
