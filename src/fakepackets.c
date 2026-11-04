@@ -8,6 +8,7 @@
 #include <ws2tcpip.h>
 #include "windivert.h"
 #include "adiosdpi.h"
+#include "quic.h"
 
 struct fake_t {
     const unsigned char* data;
@@ -317,6 +318,72 @@ int send_fake_https_request(const HANDLE w_filter,
             }
     }
     return ret;
+}
+
+static unsigned char fake_quic[1250];
+static size_t fake_quic_len;
+
+int fake_quic_load(const char *domain_name) {
+    fake_quic_len = quic_make_fake_initial(domain_name, fake_quic, sizeof(fake_quic));
+    return fake_quic_len ? 0 : 1;
+}
+
+int send_fake_quic(const HANDLE w_filter,
+                   const PWINDIVERT_ADDRESS addr,
+                   const char *pkt,
+                   const UINT packetLen,
+                   const BOOL is_ipv6,
+                   const BYTE set_ttl,
+                   const BYTE set_checksum
+                  ) {
+    char packet_fake[MAX_PACKET_SIZE];
+    WINDIVERT_ADDRESS addr_new;
+    PWINDIVERT_IPHDR ppIpHdr = NULL;
+    PWINDIVERT_IPV6HDR ppIpV6Hdr = NULL;
+    PWINDIVERT_UDPHDR ppUdpHdr = NULL;
+    PVOID packet_data;
+    UINT packet_dataLen, packetLen_new;
+
+    if (!fake_quic_len || packetLen > MAX_PACKET_SIZE)
+        return 1;
+    memcpy(&addr_new, addr, sizeof(WINDIVERT_ADDRESS));
+    memcpy(packet_fake, pkt, packetLen);
+    addr_new.IPChecksum = 0;
+    addr_new.UDPChecksum = 0;
+
+    if (!WinDivertHelperParsePacket(packet_fake, packetLen, &ppIpHdr, &ppIpV6Hdr, NULL, NULL, NULL,
+                                    NULL, &ppUdpHdr, &packet_data, &packet_dataLen, NULL, NULL) || !ppUdpHdr)
+        return 1;
+    packetLen_new = packetLen - packet_dataLen + (UINT)fake_quic_len;
+    if (packetLen_new > MAX_PACKET_SIZE)
+        return 2;
+
+    memcpy(packet_data, fake_quic, fake_quic_len);
+    ppUdpHdr->Length = htons((u_short)(sizeof(WINDIVERT_UDPHDR) + fake_quic_len));
+    if (!is_ipv6 && ppIpHdr) {
+        ppIpHdr->Length = htons((u_short)packetLen_new);
+        if (set_ttl)
+            ppIpHdr->TTL = set_ttl;
+    }
+    else if (is_ipv6 && ppIpV6Hdr) {
+        ppIpV6Hdr->Length = htons((u_short)(packetLen_new - sizeof(WINDIVERT_IPV6HDR)));
+        if (set_ttl)
+            ppIpV6Hdr->HopLimit = set_ttl;
+    }
+    else {
+        return 1;
+    }
+
+    WinDivertHelperCalcChecksums(packet_fake, packetLen_new, &addr_new, 0ULL);
+    if (set_checksum) {
+        /* ...and damage it; 0 would mean "no checksum", so it is skipped */
+        UINT16 damaged = (UINT16)(ntohs(ppUdpHdr->Checksum) + 1);
+
+        ppUdpHdr->Checksum = htons(damaged ? damaged : 1);
+    }
+    if (!WinDivertSend(w_filter, packet_fake, packetLen_new, NULL, &addr_new))
+        return 3;
+    return 0;
 }
 
 /* Takes over data (malloc'ed by the caller); frees it again if the fake can't be kept. */

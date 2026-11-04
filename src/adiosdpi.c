@@ -19,6 +19,7 @@
 #include "service.h"
 #include "tls.h"
 #include "reasm.h"
+#include "quic.h"
 #include "dnsredir.h"
 #include "dnscheck.h"
 #include "preset.h"
@@ -95,7 +96,7 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
           "(tcp.DstPort == 80 and (" HTTPREQ_TEMPLATE HTTP_METHODS_FILTER "))) and tcp.Ack and tcp.PayloadLength > 0 and " \
          "(" DIVERT_NO_LOCALNETSv4_DST " or " DIVERT_NO_LOCALNETSv6_DST "))" \
         "))"
-#define FILTER_PASSIVE_BLOCK_QUIC "outbound and !impostor and !loopback and udp " \
+#define FILTER_QUIC_INITIAL "outbound and !impostor and !loopback and udp " \
         "and udp.DstPort == 443 and udp.PayloadLength >= 1200 " \
         "and udp.Payload[0] >= 0xC0 and udp.Payload32[1b] == 0x01"
 #define FILTER_PASSIVE_STRING_TEMPLATE "inbound and ip and tcp and " \
@@ -199,6 +200,7 @@ static struct option long_options[] = {
     {"frag-by-sni", no_argument,       0,  '>' },
     {"frag-in-sni", no_argument,       0,  'M' },
     {"reasm",       no_argument,       0,  'R' },
+    {"fake-quic",   required_argument, 0,  'Q' },
     {"ip-id",       required_argument, 0,  'i' },
     {"set-ttl",     required_argument, 0,  '$' },
     {"min-ttl",     required_argument, 0,  '[' },
@@ -238,6 +240,19 @@ static void add_filter_str(int proto, int port) {
 
     filter_string = new_filter;
     free(current_filter);
+}
+
+/* Hands outgoing QUIC Initial packets to the program as well. */
+static void add_quic_filter(void) {
+    const char *quic = " or (" FILTER_QUIC_INITIAL ")";
+    char *new_filter = malloc(strlen(filter_string) + strlen(quic) + 1);
+
+    if (!new_filter)
+        die();
+    strcpy(new_filter, filter_string);
+    strcat(new_filter, quic);
+    free(filter_string);
+    filter_string = new_filter;
 }
 
 static void add_ip_id_str(int id) {
@@ -645,6 +660,7 @@ int main(int argc, char *argv[]) {
         do_fragment_by_sni = 0,
         do_fragment_in_sni = 0,
         do_reasm = 0,
+        do_fake_quic = 0,
         do_fake_packet = 0,
         do_auto_ttl = 0,
         do_wrong_chksum = 0,
@@ -667,6 +683,7 @@ int main(int argc, char *argv[]) {
     uint16_t dnsv4_port = htons(53);
     uint16_t dnsv6_port = htons(53);
     char *host_addr, *useragent_addr, *method_addr;
+    const char *fake_quic_name = NULL;
     unsigned int host_len, useragent_len;
     int http_req_fragmented;
 
@@ -942,6 +959,10 @@ int main(int argc, char *argv[]) {
                 break;
             case 'L': // --log, already opened above
                 break;
+            case 'Q': // --fake-quic
+                do_fake_quic = 1;
+                fake_quic_name = optarg;
+                break;
             case 'R': // --reasm
                 do_reasm = 1;
                 break;
@@ -1083,6 +1104,9 @@ int main(int argc, char *argv[]) {
                 " --reasm                 when the server name is not in the first segment of a ClientHello, hold that segment\n"
                 "                          until the next one comes, so --blacklist and --frag-by-sni can use the name.\n"
                 "                          Diverts all outgoing HTTPS data, which costs CPU on uploads.\n"
+                " --fake-quic  <name>     send a fake QUIC Initial with this server name before every real one, so a DPI\n"
+                "                          box that reads QUIC server names sees the fake. The fake has a low TTL (--set-ttl)\n"
+                "                          or a wrong checksum (--wrong-chksum, the default). Replaces -q, which blocks QUIC.\n"
                 " --allow-no-sni           perform circumvention if TLS SNI can't be detected with --blacklist enabled.\n"
                 " --frag-by-sni            if SNI is detected in TLS packet, fragment the packet right before SNI value.\n"
                 " --frag-in-sni            same, but fragment in the middle of the SNI value (needs --native-frag,\n"
@@ -1145,6 +1169,17 @@ int main(int argc, char *argv[]) {
     if (dns_check_domain)
         return dns_check(dns_check_domain, do_dnsv4_redirect ? dnsv4_addr : 0,
                          do_dnsv4_redirect ? dnsv4_port : 0);
+
+    if (do_fake_quic) {
+        /* The fake goes with the real Initial, so QUIC must not be blocked as well. */
+        do_block_quic = 0;
+        if (fake_quic_load(fake_quic_name)) {
+            printf("Can't build a fake QUIC packet for the name \"%s\".\n", fake_quic_name);
+            exit(ERROR_DEFAULT);
+        }
+        add_quic_filter();
+        printf("Fake QUIC Initial with the name %s before each real one (QUIC is not blocked)\n", fake_quic_name);
+    }
 
     if (!http_fragment_size)
         http_fragment_size = 2;
@@ -1261,7 +1296,7 @@ int main(int argc, char *argv[]) {
 
     if (do_block_quic) {
         filters[filter_num] = init(
-            FILTER_PASSIVE_BLOCK_QUIC,
+            FILTER_QUIC_INITIAL,
             WINDIVERT_FLAG_DROP);
         if (filters[filter_num] == NULL)
             die();
@@ -1620,6 +1655,24 @@ int main(int argc, char *argv[]) {
                         }
                     }
                 }
+            }
+
+            /* Else if we got an outgoing QUIC Initial: the fake one goes first, the real one below */
+            else if (do_fake_quic && addr.Outbound &&
+                     (packet_type == ipv4_udp_data || packet_type == ipv6_udp_data) &&
+                     ppUdpHdr->DstPort == htons(443) &&
+                     quic_is_initial((const unsigned char *)packet_data, packet_dataLen))
+            {
+                int resend;
+
+                if (do_tcp_verb)
+                    printf("QUIC Initial: sending %d fake packet(s) first\n", fakes_resend);
+                /* Like the TCP fakes: --set-ttl and --wrong-chksum; with neither, the checksum is wrong. */
+                for (resend = 0; resend < fakes_resend; resend++)
+                    if (send_fake_quic(w_filter, &addr, packet, packetLen, packet_v6,
+                                       ttl_of_fake_packet, (BYTE)(do_wrong_chksum || !ttl_of_fake_packet)) &&
+                        do_tcp_verb)
+                        printf("Can't send the fake QUIC packet (error %lu)\n", GetLastError());
             }
 
             /* Else if we got UDP packet with data */
