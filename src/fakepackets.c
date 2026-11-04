@@ -342,6 +342,8 @@ int fake_load_from_hex(const char *data) {
         return 1;
 
     unsigned char *finaldata = calloc((len + 2) / 2, 1);
+    if (!finaldata)
+        return 3;
 
     for (size_t i = 0; i<len - 1; i+=2) {
         char num1 = data[i];
@@ -357,8 +359,10 @@ int fake_load_from_hex(const char *data) {
                 curchar -= 'a' - 0xA;
             else if (curchar >= 'A' && curchar <= 'F')
                 curchar -= 'A' - 0xA;
-            else
+            else {
+                free(finaldata);
                 return 2; // incorrect character, not a hex data
+            }
 
             if (!j) {
                 num1 = curchar;
@@ -389,6 +393,8 @@ int fake_load_random(unsigned int count, unsigned int maxsize) {
         len = 8 + (len % maxsize);
 
         unsigned char *data = calloc(len, 1);
+        if (!data)
+            return 2;
         for (unsigned int j=0; j<len; j++) {
             rand_s(&random);
             data[j] = random % 0xFF;
@@ -416,6 +422,8 @@ int fake_load_from_sni(const char *domain_name) {
     const int packet_size = part0_size + part1_size + sni_head_size + name_size;
     // allocate memory
     unsigned char *packet = malloc(packet_size);
+    if (!packet)
+        return 3;
     // copy major parts of packet
     memcpy(packet, fake_clienthello_part0, part0_size);
     memcpy(&packet[part0_size + sni_head_size + name_size], fake_clienthello_part1, part1_size);
