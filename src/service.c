@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "adiosdpi.h"
 #include "service.h"
 
@@ -96,6 +97,119 @@ void service_controlhandler(DWORD request)
     return;
 }
 
+#define INSTALL_DIR_NAME "AdiosDPI"
+
+/*
+ * The service runs as SYSTEM, so it must start from a folder that only administrators
+ * can write to (an unzipped download is usually writable by every user, who could then
+ * swap the exe). Program Files is that folder.
+ */
+static int install_dir(char *dir, size_t size)
+{
+    const char *programs = getenv("ProgramW6432");
+
+    if (!programs)
+        programs = getenv("ProgramFiles");
+    if (!programs)
+        return 0;
+    snprintf(dir, size, "%s\\" INSTALL_DIR_NAME, programs);
+    return 1;
+}
+
+/* Copies this program and the WinDivert files next to it into dir; the new exe path goes to installed. */
+static int copy_files(const char *exe, const char *dir, char *installed, size_t size)
+{
+    static const char *patterns[] = {"WinDivert*.dll", "WinDivert*.sys"};
+    char folder[MAX_PATH], pattern[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    const char *name = strrchr(exe, '\\');
+    int drivers = 0;
+    size_t p;
+
+    if (!name)
+        return 0;
+    snprintf(installed, size, "%s\\%s", dir, name + 1);
+    if (_stricmp(exe, installed) == 0)
+        return 1;                       /* already running from the install folder */
+    snprintf(folder, sizeof(folder), "%.*s", (int)(name - exe), exe);
+    CreateDirectory(dir, NULL);
+    if (!CopyFile(exe, installed, FALSE))
+        return 0;
+    for (p = 0; p < sizeof(patterns) / sizeof(*patterns); p++) {
+        WIN32_FIND_DATA fd;
+        HANDLE find;
+
+        snprintf(pattern, sizeof(pattern), "%s\\%s", folder, patterns[p]);
+        find = FindFirstFile(pattern, &fd);
+        if (find == INVALID_HANDLE_VALUE)
+            continue;
+        do {
+            snprintf(src, sizeof(src), "%s\\%s", folder, fd.cFileName);
+            snprintf(dst, sizeof(dst), "%s\\%s", dir, fd.cFileName);
+            if (!CopyFile(src, dst, FALSE)) {
+                FindClose(find);
+                return 0;
+            }
+            if (p == 1)
+                drivers++;
+        } while (FindNextFile(find, &fd));
+        FindClose(find);
+    }
+    if (!drivers) {
+        puts("The WinDivert driver file (WinDivert64.sys) was not found next to the program.");
+        return 0;
+    }
+    printf("Copied the program to %s\n", dir);
+    return 1;
+}
+
+/* Deletes what copy_files() put in the install folder. Returns 1 when nothing is left. */
+static int remove_files(void)
+{
+    char dir[MAX_PATH], pattern[MAX_PATH], file[MAX_PATH], self[MAX_PATH];
+    WIN32_FIND_DATA fd;
+    HANDLE find, driver_manager, driver;
+    SERVICE_STATUS status;
+    int left = 0, tries;
+
+    if (!install_dir(dir, sizeof(dir)))
+        return 1;
+    GetModuleFileName(NULL, self, sizeof(self));
+
+    /* The driver stays loaded after its last user is gone and keeps its file locked. */
+    driver_manager = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+    if (driver_manager) {
+        driver = OpenService(driver_manager, "WinDivert", SERVICE_STOP);
+        if (driver) {
+            ControlService(driver, SERVICE_CONTROL_STOP, &status);
+            CloseServiceHandle(driver);
+        }
+        CloseServiceHandle(driver_manager);
+        Sleep(500);
+    }
+
+    snprintf(pattern, sizeof(pattern), "%s\\*", dir);
+    find = FindFirstFile(pattern, &fd);
+    if (find == INVALID_HANDLE_VALUE)
+        return 1;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        snprintf(file, sizeof(file), "%s\\%s", dir, fd.cFileName);
+        if (_stricmp(file, self) == 0) {
+            left = 1;                   /* can't delete the program that is running */
+            continue;
+        }
+        for (tries = 0; tries < 5 && !DeleteFile(file); tries++)
+            Sleep(200);
+        if (tries == 5)
+            left = 1;
+    } while (FindNextFile(find, &fd));
+    FindClose(find);
+    if (!left)
+        RemoveDirectory(dir);
+    return !left;
+}
+
 /* Appends one argument to a command line, quoted if it has blanks. Returns 0 if it does not fit. */
 static int append_arg(char *cmd, size_t size, const char *arg)
 {
@@ -115,7 +229,7 @@ static int append_arg(char *cmd, size_t size, const char *arg)
 
 int service_install(int argc, char *argv[])
 {
-    char path[MAX_PATH], cmd[4096];
+    char path[MAX_PATH], dir[MAX_PATH], installed[MAX_PATH], cmd[4096];
     SERVICE_DESCRIPTION description = {"DPI circumvention (AdiosDPI)"};
     SC_HANDLE scm, svc;
     DWORD err;
@@ -125,6 +239,11 @@ int service_install(int argc, char *argv[])
         puts("Can't find the path of this program.");
         return 1;
     }
+    if (!install_dir(dir, sizeof(dir)) || !copy_files(path, dir, installed, sizeof(installed))) {
+        puts("Can't copy the program to the install folder (run as administrator).");
+        return 1;
+    }
+    snprintf(path, sizeof(path), "%s", installed);
     snprintf(cmd, sizeof(cmd), "\"%s\"", path);
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--install") == 0)
@@ -190,6 +309,8 @@ int service_remove(void)
         Sleep(200);
     if (DeleteService(svc)) {
         puts("The AdiosDPI service is stopped and removed.");
+        if (!remove_files())
+            puts("Some files stay in the install folder; delete it after a restart.");
     }
     else {
         printf("Can't remove the service (error %lu).\n", GetLastError());
