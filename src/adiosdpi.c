@@ -190,6 +190,7 @@ static struct option long_options[] = {
     {"blacklist",   required_argument, 0,  'b' },
     {"allow-no-sni",no_argument,       0,  ']' },
     {"frag-by-sni", no_argument,       0,  '>' },
+    {"frag-in-sni", no_argument,       0,  'M' },
     {"ip-id",       required_argument, 0,  'i' },
     {"set-ttl",     required_argument, 0,  '$' },
     {"min-ttl",     required_argument, 0,  '[' },
@@ -646,6 +647,7 @@ int main(int argc, char *argv[]) {
         do_dns_verb = 0, do_tcp_verb = 0, do_blacklist = 0,
         do_allow_no_sni = 0,
         do_fragment_by_sni = 0,
+        do_fragment_in_sni = 0,
         do_fake_packet = 0,
         do_auto_ttl = 0,
         do_wrong_chksum = 0,
@@ -930,6 +932,9 @@ int main(int argc, char *argv[]) {
             case '>': // --frag-by-sni
                 do_fragment_by_sni = 1;
                 break;
+            case 'M': // --frag-in-sni
+                do_fragment_by_sni = do_fragment_in_sni = 1;
+                break;
             case '$': // --set-ttl
                 do_auto_ttl = auto_ttl_1 = auto_ttl_2 = auto_ttl_max = 0;
                 do_fake_packet = 1;
@@ -1062,6 +1067,8 @@ int main(int argc, char *argv[]) {
                 "                          This option can be supplied multiple times.\n"
                 " --allow-no-sni           perform circumvention if TLS SNI can't be detected with --blacklist enabled.\n"
                 " --frag-by-sni            if SNI is detected in TLS packet, fragment the packet right before SNI value.\n"
+                " --frag-in-sni            same, but fragment in the middle of the SNI value (needs --native-frag,\n"
+                "                          which the modes -5 to -9 have).\n"
                 " --set-ttl     <value>    activate Fake Request Mode and send it with supplied TTL value.\n"
                 "                          DANGEROUS! May break websites in unexpected ways. Use with care (or --blacklist).\n"
                 " --auto-ttl    [a1-a2-m]  activate Fake Request Mode, automatically detect TTL and decrease\n"
@@ -1504,7 +1511,9 @@ int main(int argc, char *argv[]) {
                     }
                     else if (do_fragment_https && ppTcpHdr->DstPort != htons(80)) {
                         if (do_fragment_by_sni && sni_ok) {
-                            current_fragment_size = (void*)host_addr - packet_data;
+                            current_fragment_size = (unsigned int)(host_addr - (char *)packet_data);
+                            if (do_fragment_in_sni)
+                                current_fragment_size += host_len / 2;
                         } else {
                             current_fragment_size = https_fragment_size;
                         }
