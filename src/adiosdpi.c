@@ -592,6 +592,20 @@ static void send_native_fragment(HANDLE w_filter, WINDIVERT_ADDRESS addr,
     //printf("Sent native fragment of %d size (step%d)\n", packetLen, step);
 }
 
+/*
+ * Looking through every running program takes about half a second, so it runs beside the start-up
+ * instead of in front of it: the filter opens at once and the warning, if any, follows.
+ */
+static DWORD WINAPI warn_about_other_tools(LPVOID unused) {
+    char others[512];
+
+    (void)unused;
+    if (windivert_users(others, sizeof(others), 0))
+        printf("\nWARNING: WinDivert is loaded by %s. Two bypass tools at once can break connections;\n"
+               "close the other one first if sites stop opening.\n", others);
+    return 0;
+}
+
 static int print_status(void) {
     DWORD pid = 0;
     char users[512];
@@ -1278,10 +1292,9 @@ int main(int argc, char *argv[]) {
         finalize_filter_strings(&features);
     }
     {
-        char others[512];
-        if (windivert_users(others, sizeof(others), 0))
-            printf("\nWARNING: WinDivert is loaded by %s. Two bypass tools at once can break connections;\n"
-                   "close the other one first if sites stop opening.\n", others);
+        HANDLE scan = CreateThread(NULL, 0, warn_about_other_tools, NULL, 0, NULL);
+        if (scan)
+            CloseHandle(scan);
     }
     puts("\nOpening filter");
     filter_num = 0;
