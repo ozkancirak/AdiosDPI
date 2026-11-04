@@ -8,9 +8,15 @@
 #include <string.h>
 #include "preset.h"
 
-/* Plain UDP DNS on a non-standard port, which ISP resolvers do not intercept. */
-#define DNS_OPTIONS "--dns-addr", "77.88.8.8", "--dns-port", "1253", \
-                    "--dnsv6-addr", "2a02:6b8::feed:0ff", "--dnsv6-port", "1253"
+/*
+ * Plain UDP DNS on a non-standard port, which ISP resolvers do not intercept. This is Quad9's
+ * documented alternate port 9953 on its service without threat blocking, so no answer is changed.
+ * On the one Turkish line it was measured on it answers in about 11 ms (IPv4), where the Yandex
+ * server the first presets used (77.88.8.8 port 1253) took about 90 ms, paid on every name that
+ * is not cached yet. Any resolver can still be chosen with --dns-addr and --dns-port.
+ */
+#define DNS_OPTIONS "--dns-addr", "9.9.9.10", "--dns-port", "9953", \
+                    "--dnsv6-addr", "2620:fe::10", "--dnsv6-port", "9953"
 
 #define MAX_PRESET_OPTIONS 12
 
