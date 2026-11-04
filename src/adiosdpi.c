@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
 #include <getopt.h>
 #include <in6addr.h>
 #include <ws2tcpip.h>
@@ -190,6 +191,7 @@ static struct option long_options[] = {
     {"dnsv6-port",  required_argument, 0,  '@' },
     {"dns-verb",    no_argument,       0,  'v' },
     {"dns-check",   required_argument, 0,  'D' },
+    {"log",         required_argument, 0,  'L' },
     {"blacklist",   required_argument, 0,  'b' },
     {"allow-no-sni",no_argument,       0,  ']' },
     {"frag-by-sni", no_argument,       0,  '>' },
@@ -633,6 +635,22 @@ static int print_status(void) {
     return 0;
 }
 
+/* Sends everything the program prints to a file. A service has no console, so this is how to see its output. */
+static int open_log(const char *name) {
+    time_t now = time(NULL);
+    char stamp[32] = "";
+
+    if (!freopen(name, "w", stdout)) {
+        fprintf(stderr, "Can't open the log file %s.\n", name);
+        return 0;
+    }
+    dup2(fileno(stdout), fileno(stderr));
+    setvbuf(stdout, NULL, _IONBF, 0);       /* the file is up to date if the program is stopped */
+    strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    printf("Log started %s\n", stamp);
+    return 1;
+}
+
 int main(int argc, char *argv[]) {
     static enum packet_type_e {
         unknown,
@@ -738,6 +756,17 @@ int main(int argc, char *argv[]) {
             }
             return probe(argv[i + 1]);
         }
+    }
+
+    for (i = 1; i < argc; i++) {
+        const char *log = NULL;
+
+        if (strcmp(argv[i], "--log") == 0 && i + 1 < argc)
+            log = argv[i + 1];
+        else if (strncmp(argv[i], "--log=", 6) == 0)
+            log = argv[i] + 6;
+        if (log && !open_log(log))
+            exit(ERROR_DEFAULT);
     }
 
     if (filter_string == NULL)
@@ -954,6 +983,8 @@ int main(int argc, char *argv[]) {
             case '>': // --frag-by-sni
                 do_fragment_by_sni = 1;
                 break;
+            case 'L': // --log, already opened above
+                break;
             case 'M': // --frag-in-sni
                 do_fragment_by_sni = do_fragment_in_sni = 1;
                 break;
@@ -1079,11 +1110,13 @@ int main(int argc, char *argv[]) {
                 " --preset      <name>     use a ready set of options: dns, dns-5 or dns-9.\n"
                 "                          Do not combine with --dns-addr or --dns-port.\n"
                 " --install                install AdiosDPI as a Windows service that starts with Windows, using the\n"
-                "                          other options given (use full paths for files), and start it.\n"
+                "                          other options given, and start it. File names are turned into full paths.\n"
                 " --remove                 stop and remove the AdiosDPI service.\n"
                 " --status                 show whether the service runs and whether another WinDivert tool is loaded.\n"
                 " --probe       <domain>   try to open the site without any tool and then with each preset,\n"
                 "                          and say which one works. Needs a few seconds per candidate.\n"
+                " --log         <txtfile>  write everything the program prints to this file instead of the console\n"
+                "                          (a new file each run). Use it with --install, a service has no console.\n"
                 " --blacklist   <txtfile>  perform circumvention tricks only to host names and subdomains from\n"
                 "                          supplied text file (HTTP Host/TLS SNI).\n"
                 "                          This option can be supplied multiple times.\n"

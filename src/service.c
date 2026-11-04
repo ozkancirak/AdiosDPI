@@ -212,25 +212,59 @@ static int remove_files(void)
     return !left;
 }
 
-/* Is argv[i] a file name the service will have to open? It starts in the System32 folder. */
-static int is_file_arg(char *argv[], int i)
+/* Options that take a file name. The service starts in the System32 folder, so it needs full paths. */
+static const struct {
+    const char *name;
+    int must_exist;                     /* 0: the program creates the file */
+} file_options[] = {
+    {"--blacklist", 1},
+    {"--log", 0},
+};
+
+/* Does argv[i] hold a file name, as in "--log name" or "--log=name"? Returns its entry in file_options. */
+static int file_option_of(char *argv[], int i)
 {
-    return strcmp(argv[i - 1], "--blacklist") == 0 || strncmp(argv[i], "--blacklist=", 12) == 0;
+    size_t k;
+
+    for (k = 0; k < sizeof(file_options) / sizeof(*file_options); k++) {
+        size_t len = strlen(file_options[k].name);
+
+        if (strcmp(argv[i - 1], file_options[k].name) == 0 ||
+            (strncmp(argv[i], file_options[k].name, len) == 0 && argv[i][len] == '='))
+            return (int)k;
+    }
+    return -1;
 }
 
-/* Turns the file name in arg (or in --blacklist=name) into a full path to a file that exists. */
-static int resolve_file_arg(const char *arg, char *out, size_t size)
+/* Turns the file name in arg (or in --option=name) into a full path. */
+static int resolve_file_arg(const char *arg, int option, char *out, size_t size)
 {
-    const char *prefix = strncmp(arg, "--blacklist=", 12) == 0 ? "--blacklist=" : "";
-    const char *name = arg + strlen(prefix);
+    const char *equals = strncmp(arg, "--", 2) == 0 ? strchr(arg, '=') : NULL;
+    const char *name = equals ? equals + 1 : arg;
     char full[MAX_PATH];
 
-    if (!GetFullPathName(name, sizeof(full), full, NULL) ||
-        GetFileAttributes(full) == INVALID_FILE_ATTRIBUTES) {
-        printf("Can't find the file \"%s\".\n", name);
+    if (!GetFullPathName(name, sizeof(full), full, NULL)) {
+        printf("Can't use the file name \"%s\".\n", name);
         return 0;
     }
-    snprintf(out, size, "%s%s", prefix, full);
+    if (file_options[option].must_exist) {
+        if (GetFileAttributes(full) == INVALID_FILE_ATTRIBUTES) {
+            printf("Can't find the file \"%s\".\n", name);
+            return 0;
+        }
+    } else {
+        int existed = GetFileAttributes(full) != INVALID_FILE_ATTRIBUTES;
+        FILE *test = fopen(full, "a");  /* the service would fail the same way when it starts */
+
+        if (!test) {
+            printf("Can't write the file \"%s\".\n", name);
+            return 0;
+        }
+        fclose(test);
+        if (!existed)
+            DeleteFile(full);
+    }
+    snprintf(out, size, "%.*s%s", (int)(name - arg), arg, full);
     return 1;
 }
 
@@ -270,8 +304,10 @@ int service_install(int argc, char *argv[])
         const char *arg = argv[i];
         char resolved[MAX_PATH + 16];
 
-        if (is_file_arg(argv, i)) {
-            if (!resolve_file_arg(argv[i], resolved, sizeof(resolved)))
+        int option = file_option_of(argv, i);
+
+        if (option >= 0) {
+            if (!resolve_file_arg(argv[i], option, resolved, sizeof(resolved)))
                 return 1;
             arg = resolved;
         }
