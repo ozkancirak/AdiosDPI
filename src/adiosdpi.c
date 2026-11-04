@@ -68,8 +68,9 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
 #define IPID_TEMPLATE "#IPID#"
 #define MAXPAYLOADSIZE_TEMPLATE "#MAXPAYLOADSIZE#"
 #define PASSIVE_TEMPLATE "#PASSIVE#"
+#define TCPOFF_TEMPLATE "#TCPOFF#"
 #define FILTER_STRING_TEMPLATE \
-        "(tcp and !impostor and !loopback " MAXPAYLOADSIZE_TEMPLATE " and " \
+        "(" TCPOFF_TEMPLATE "tcp and !impostor and !loopback " MAXPAYLOADSIZE_TEMPLATE " and " \
         "((inbound and (" \
          "(" \
           "(" \
@@ -260,7 +261,7 @@ static void add_maxpayloadsize_str(unsigned short maxpayload) {
     filter_string = newstr;
 }
 
-static void finalize_filter_strings(int passive) {
+static void finalize_filter_strings(int passive, int tcp) {
     char *newstr, *newstr2;
 
     newstr2 = repl_str(filter_string, IPID_TEMPLATE, "");
@@ -268,8 +269,10 @@ static void finalize_filter_strings(int passive) {
     free(newstr2);
     newstr2 = repl_str(newstr, PASSIVE_TEMPLATE, passive ? "" : "false and ");
     free(newstr);
+    newstr = repl_str(newstr2, TCPOFF_TEMPLATE, tcp ? "" : "false and ");
+    free(newstr2);
     free(filter_string);
-    filter_string = newstr2;
+    filter_string = newstr;
 
     newstr = repl_str(filter_passive_string, IPID_TEMPLATE, "");
     free(filter_passive_string);
@@ -1173,7 +1176,11 @@ int main(int argc, char *argv[]) {
 
     if (max_payload_size)
         add_maxpayloadsize_str(max_payload_size);
-    finalize_filter_strings(do_passivedpi);
+    /* Without any TCP feature the driver has no TCP packet to hand us. */
+    finalize_filter_strings(do_passivedpi,
+        do_passivedpi || do_fake_packet || do_native_frag || do_host ||
+        do_host_removespace || do_host_mixedcase || do_fragment_http ||
+        do_fragment_https || do_fragment_http_persistent);
     {
         char other[MAX_PATH];
         if (other_windivert_user(other, sizeof(other)))
