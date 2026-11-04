@@ -212,6 +212,28 @@ static int remove_files(void)
     return !left;
 }
 
+/* Is argv[i] a file name the service will have to open? It starts in the System32 folder. */
+static int is_file_arg(char *argv[], int i)
+{
+    return strcmp(argv[i - 1], "--blacklist") == 0 || strncmp(argv[i], "--blacklist=", 12) == 0;
+}
+
+/* Turns the file name in arg (or in --blacklist=name) into a full path to a file that exists. */
+static int resolve_file_arg(const char *arg, char *out, size_t size)
+{
+    const char *prefix = strncmp(arg, "--blacklist=", 12) == 0 ? "--blacklist=" : "";
+    const char *name = arg + strlen(prefix);
+    char full[MAX_PATH];
+
+    if (!GetFullPathName(name, sizeof(full), full, NULL) ||
+        GetFileAttributes(full) == INVALID_FILE_ATTRIBUTES) {
+        printf("Can't find the file \"%s\".\n", name);
+        return 0;
+    }
+    snprintf(out, size, "%s%s", prefix, full);
+    return 1;
+}
+
 /* Appends one argument to a command line, quoted if it has blanks. Returns 0 if it does not fit. */
 static int append_arg(char *cmd, size_t size, const char *arg)
 {
@@ -231,7 +253,7 @@ static int append_arg(char *cmd, size_t size, const char *arg)
 
 int service_install(int argc, char *argv[])
 {
-    char path[MAX_PATH], dir[MAX_PATH], installed[MAX_PATH], cmd[4096];
+    char path[MAX_PATH], dir[MAX_PATH], installed[MAX_PATH], cmd[4096], full[4096 + MAX_PATH];
     SERVICE_DESCRIPTION description = {"DPI circumvention (AdiosDPI)"};
     SC_HANDLE scm, svc;
     DWORD err;
@@ -241,20 +263,30 @@ int service_install(int argc, char *argv[])
         puts("Can't find the path of this program.");
         return 1;
     }
-    if (!install_dir(dir, sizeof(dir)) || !copy_files(path, dir, installed, sizeof(installed))) {
-        puts("Can't copy the program to the install folder (run as administrator).");
-        return 1;
-    }
-    snprintf(path, sizeof(path), "%s", installed);
-    snprintf(cmd, sizeof(cmd), "\"%s\"", path);
+    cmd[0] = '\0';
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--install") == 0)
             continue;
-        if (!append_arg(cmd, sizeof(cmd), argv[i])) {
+        const char *arg = argv[i];
+        char resolved[MAX_PATH + 16];
+
+        if (is_file_arg(argv, i)) {
+            if (!resolve_file_arg(argv[i], resolved, sizeof(resolved)))
+                return 1;
+            arg = resolved;
+        }
+        if (!append_arg(cmd, sizeof(cmd), arg)) {
             printf("Can't pass the argument \"%s\" to the service.\n", argv[i]);
             return 1;
         }
     }
+
+    /* Copy only after every argument is known to be good, so a failed install leaves nothing behind. */
+    if (!install_dir(dir, sizeof(dir)) || !copy_files(path, dir, installed, sizeof(installed))) {
+        puts("Can't copy the program to the install folder (run as administrator).");
+        return 1;
+    }
+    snprintf(full, sizeof(full), "\"%s\"%s", installed, cmd);
 
     scm = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
     if (!scm) {
@@ -263,7 +295,7 @@ int service_install(int argc, char *argv[])
     }
     svc = CreateService(scm, SERVICE_NAME, SERVICE_NAME, SERVICE_ALL_ACCESS,
                         SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START,
-                        SERVICE_ERROR_NORMAL, cmd, NULL, NULL, NULL, NULL, NULL);
+                        SERVICE_ERROR_NORMAL, full, NULL, NULL, NULL, NULL, NULL);
     if (!svc) {
         err = GetLastError();
         if (err == ERROR_SERVICE_EXISTS)
