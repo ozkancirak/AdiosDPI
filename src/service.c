@@ -216,7 +216,7 @@ static int append_arg(char *cmd, size_t size, const char *arg)
     int quote = !*arg || strchr(arg, ' ') || strchr(arg, '\t');
     size_t need = strlen(cmd) + strlen(arg) + (quote ? 2 : 0) + 2;
 
-    if (strchr(arg, '"') || need > size || (quote && arg[strlen(arg) - 1] == '\\'))
+    if (strchr(arg, '"') || need > size || (quote && *arg && arg[strlen(arg) - 1] == '\\'))
         return 0;
     strcat(cmd, " ");
     if (quote)
