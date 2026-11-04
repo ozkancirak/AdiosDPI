@@ -69,6 +69,7 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
 #define MAXPAYLOADSIZE_TEMPLATE "#MAXPAYLOADSIZE#"
 #define PASSIVE_TEMPLATE "#PASSIVE#"
 #define TCPOFF_TEMPLATE "#TCPOFF#"
+#define SYNACK_TEMPLATE "#SYNACK#"
 #define FILTER_STRING_TEMPLATE \
         "(" TCPOFF_TEMPLATE "tcp and !impostor and !loopback " MAXPAYLOADSIZE_TEMPLATE " and " \
         "((inbound and (" \
@@ -78,7 +79,7 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
            ") and " \
            PASSIVE_TEMPLATE "tcp.SrcPort == 80 and tcp.Ack" \
           ") or " \
-          "((tcp.SrcPort == 80 or tcp.SrcPort == 443) and tcp.Ack and tcp.Syn)" \
+          "(" SYNACK_TEMPLATE "(tcp.SrcPort == 80 or tcp.SrcPort == 443) and tcp.Ack and tcp.Syn)" \
          ")" \
          " and (" DIVERT_NO_LOCALNETSv4_SRC " or " DIVERT_NO_LOCALNETSv6_SRC "))) or " \
         "(outbound and " \
@@ -261,7 +262,7 @@ static void add_maxpayloadsize_str(unsigned short maxpayload) {
     filter_string = newstr;
 }
 
-static void finalize_filter_strings(int passive, int tcp) {
+static void finalize_filter_strings(int passive, int tcp, int synack) {
     char *newstr, *newstr2;
 
     newstr2 = repl_str(filter_string, IPID_TEMPLATE, "");
@@ -271,8 +272,10 @@ static void finalize_filter_strings(int passive, int tcp) {
     free(newstr);
     newstr = repl_str(newstr2, TCPOFF_TEMPLATE, tcp ? "" : "false and ");
     free(newstr2);
+    newstr2 = repl_str(newstr, SYNACK_TEMPLATE, synack ? "" : "false and ");
+    free(newstr);
     free(filter_string);
-    filter_string = newstr;
+    filter_string = newstr2;
 
     newstr = repl_str(filter_passive_string, IPID_TEMPLATE, "");
     free(filter_passive_string);
@@ -1197,7 +1200,10 @@ int main(int argc, char *argv[]) {
     finalize_filter_strings(do_passivedpi,
         do_passivedpi || do_fake_packet || do_native_frag || do_host ||
         do_host_removespace || do_host_mixedcase || do_fragment_http ||
-        do_fragment_https || do_fragment_http_persistent);
+        do_fragment_https || do_fragment_http_persistent,
+        /* A server's SYN+ACK is used to shrink its window and to measure its distance. */
+        (!do_native_frag && (do_fragment_http || do_fragment_https)) ||
+        (do_fake_packet && (do_auto_ttl || ttl_min_nhops)));
     {
         char others[512];
         if (windivert_users(others, sizeof(others), 0))
