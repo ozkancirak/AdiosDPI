@@ -71,6 +71,13 @@ static int add_hostname(const char *host) {
     return FALSE;
 }
 
+/* Host names are not case sensitive, so the table and the names to look up are all lowercase. */
+static void to_lower(char *s) {
+    for (; *s; s++)
+        if (*s >= 'A' && *s <= 'Z')
+            *s = (char)(*s + ('a' - 'A'));
+}
+
 static void free_table(blackwhitelist_record_t **table) {
     blackwhitelist_record_t *rec, *tmp;
 
@@ -103,6 +110,7 @@ static int read_list(const char *filename, const char *verb) {
     while ((read = getline(&line, &linelen, fp)) != -1) {
         /* works with both \n and \r\n */
         line[strcspn(line, "\r\n")] = '\0';
+        to_lower(line);
         if (strlen(line) > HOST_MAXLEN) {
             printf("WARNING: host %s exceeds maximum host length and has not been added\n",
                 line);
@@ -181,6 +189,7 @@ int blackwhitelist_check_hostname(const char *host_addr, size_t host_len) {
     if (host_addr && host_len) {
         memcpy(current_host, host_addr, host_len);
         current_host[host_len] = '\0';
+        to_lower(current_host);
     }
 
     if (check_get_hostname(current_host))
