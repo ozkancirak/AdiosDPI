@@ -12,7 +12,7 @@
 #define DNS_OPTIONS "--dns-addr", "77.88.8.8", "--dns-port", "1253", \
                     "--dnsv6-addr", "2a02:6b8::feed:0ff", "--dnsv6-port", "1253"
 
-#define MAX_PRESET_OPTIONS 10
+#define MAX_PRESET_OPTIONS 12
 
 static const struct {
     const char *name;
@@ -22,6 +22,9 @@ static const struct {
     {"dns",   "fix DNS poisoning only, no packet tricks",     {DNS_OPTIONS, NULL}},
     {"dns-5", "DNS fix + mode -5 (modern, auto TTL)",         {"-5", DNS_OPTIONS, NULL}},
     {"dns-9", "DNS fix + mode -9 (all fakes, blocks QUIC)",   {"-9", DNS_OPTIONS, NULL}},
+    {"ttl3",     "fake packets with TTL 3, no DNS fix",       {"--set-ttl", "3", NULL}},
+    {"dns-ttl3", "DNS fix + fake packets with TTL 3",         {"--set-ttl", "3", DNS_OPTIONS, NULL}},
+    {"dns-ttl5", "DNS fix + mode -5 with fixed TTL 5",        {"-5", "--set-ttl", "5", DNS_OPTIONS, NULL}},
 };
 #define PRESET_COUNT (sizeof(presets) / sizeof(*presets))
 
@@ -29,7 +32,7 @@ static void list_presets(void) {
     size_t i;
     puts("Available presets:");
     for (i = 0; i < PRESET_COUNT; i++)
-        printf("  %-6s %s\n", presets[i].name, presets[i].description);
+        printf("  %-9s %s\n", presets[i].name, presets[i].description);
 }
 
 char **preset_expand(int *argc, char **argv) {
