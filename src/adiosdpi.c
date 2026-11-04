@@ -590,6 +590,20 @@ static void send_native_fragment(HANDLE w_filter, WINDIVERT_ADDRESS addr,
     //printf("Sent native fragment of %d size (step%d)\n", packetLen, step);
 }
 
+static int print_status(void) {
+    DWORD pid = 0;
+    char users[512];
+
+    printf("AdiosDPI " ADIOSDPI_VERSION "\n");
+    service_status(&pid);
+    if (windivert_users(users, sizeof(users), pid))
+        printf("WinDivert: also loaded by %s\n", users);
+    else
+        puts("WinDivert: not loaded by any other program");
+    puts("DNS      : run --dns-check <domain> to see whether DNS is poisoned");
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     static enum packet_type_e {
         unknown,
@@ -685,6 +699,8 @@ int main(int argc, char *argv[]) {
             return service_install(argc, argv);
         if (strcmp(argv[i], "--remove") == 0)
             return service_remove();
+        if (strcmp(argv[i], "--status") == 0)
+            return print_status();
         if (strcmp(argv[i], "--probe") == 0) {
             if (i + 1 >= argc) {
                 puts("--probe needs a domain name.");
@@ -1032,6 +1048,7 @@ int main(int argc, char *argv[]) {
                 " --install                install AdiosDPI as a Windows service that starts with Windows, using the\n"
                 "                          other options given (use full paths for files), and start it.\n"
                 " --remove                 stop and remove the AdiosDPI service.\n"
+                " --status                 show whether the service runs and whether another WinDivert tool is loaded.\n"
                 " --probe       <domain>   try to open the site without any tool and then with each preset,\n"
                 "                          and say which one works. Needs a few seconds per candidate.\n"
                 " --blacklist   <txtfile>  perform circumvention tricks only to host names and subdomains from\n"
@@ -1182,10 +1199,10 @@ int main(int argc, char *argv[]) {
         do_host_removespace || do_host_mixedcase || do_fragment_http ||
         do_fragment_https || do_fragment_http_persistent);
     {
-        char other[MAX_PATH];
-        if (other_windivert_user(other, sizeof(other)))
-            printf("\nWARNING: %s has WinDivert loaded. Two bypass tools at once can break connections;\n"
-                   "close it first if sites stop opening.\n", other);
+        char others[512];
+        if (windivert_users(others, sizeof(others), 0))
+            printf("\nWARNING: WinDivert is loaded by %s. Two bypass tools at once can break connections;\n"
+                   "close the other one first if sites stop opening.\n", others);
     }
     puts("\nOpening filter");
     filter_num = 0;

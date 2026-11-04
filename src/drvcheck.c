@@ -9,23 +9,26 @@
 #include <string.h>
 #include "drvcheck.h"
 
-int other_windivert_user(char *name, size_t size)
+int windivert_users(char *names, size_t size, DWORD skip_pid)
 {
     PROCESSENTRY32 pe;
     HANDLE procs = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     DWORD self = GetCurrentProcessId();
     BOOL more;
-    int found = 0;
+    int count = 0;
 
+    if (size)
+        names[0] = '\0';
     if (procs == INVALID_HANDLE_VALUE)
         return 0;
     pe.dwSize = sizeof(pe);
-    for (more = Process32First(procs, &pe); more && !found; more = Process32Next(procs, &pe)) {
+    for (more = Process32First(procs, &pe); more; more = Process32Next(procs, &pe)) {
         MODULEENTRY32 me;
         HANDLE mods;
         BOOL next;
 
-        if (pe.th32ProcessID == self || pe.th32ProcessID == 0)
+        if (pe.th32ProcessID == self || pe.th32ProcessID == 0 ||
+            (skip_pid && pe.th32ProcessID == skip_pid))
             continue;
         /* Fails for protected processes; those are not bypass tools. */
         mods = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pe.th32ProcessID);
@@ -34,13 +37,15 @@ int other_windivert_user(char *name, size_t size)
         me.dwSize = sizeof(me);
         for (next = Module32First(mods, &me); next; next = Module32Next(mods, &me)) {
             if (_strnicmp(me.szModule, "WinDivert", 9) == 0) {
-                snprintf(name, size, "%s", pe.szExeFile);
-                found = 1;
+                size_t used = strlen(names);
+                if (used + strlen(pe.szExeFile) + 3 < size)
+                    snprintf(names + used, size - used, "%s%s", count ? ", " : "", pe.szExeFile);
+                count++;
                 break;
             }
         }
         CloseHandle(mods);
     }
     CloseHandle(procs);
-    return found;
+    return count;
 }

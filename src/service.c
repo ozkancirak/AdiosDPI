@@ -199,3 +199,43 @@ int service_remove(void)
     CloseServiceHandle(scm);
     return ret;
 }
+
+/* Prints the state of the service. Stores the process id of a running service in *pid. */
+int service_status(DWORD *pid)
+{
+    SERVICE_STATUS_PROCESS status;
+    QUERY_SERVICE_CONFIG *config = NULL;
+    SC_HANDLE scm, svc;
+    DWORD needed = 0;
+    const char *state;
+
+    *pid = 0;
+    scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+    svc = scm ? OpenService(scm, SERVICE_NAME, SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS) : NULL;
+    if (!svc) {
+        puts("Service  : not installed (--install adds it)");
+        if (scm)
+            CloseServiceHandle(scm);
+        return 0;
+    }
+    if (QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, (LPBYTE)&status, sizeof(status), &needed)) {
+        state = status.dwCurrentState == SERVICE_RUNNING ? "running" :
+                status.dwCurrentState == SERVICE_STOPPED ? "stopped" : "changing state";
+        if (status.dwCurrentState == SERVICE_RUNNING)
+            *pid = status.dwProcessId;
+    }
+    else {
+        state = "state unknown";
+    }
+    QueryServiceConfig(svc, NULL, 0, &needed);
+    if (needed && (config = malloc(needed)) != NULL && QueryServiceConfig(svc, config, needed, &needed))
+        printf("Service  : %s, %s\n  command: %s\n", state,
+               config->dwStartType == SERVICE_AUTO_START ? "starts with Windows" : "does not start with Windows",
+               config->lpBinaryPathName);
+    else
+        printf("Service  : %s\n", state);
+    free(config);
+    CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return 0;
+}
