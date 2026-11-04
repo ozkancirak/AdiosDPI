@@ -498,11 +498,12 @@ static int extract_sni(const char *pktdata, unsigned int pktlen,
                 if (hnlen < 3 || hnlen > HOST_MAXLEN) {
                     return FALSE;
                 }
-                /* Validate that hostname has only ascii lowercase characters */
+                /* Validate that hostname has only ascii letters, digits, dots, dashes and underscores */
                 for (int i=0; i<hnlen; i++) {
                     if (!( (hnaddr[i] >= '0' && hnaddr[i] <= '9') ||
                          (hnaddr[i] >= 'a' && hnaddr[i] <= 'z') ||
-                         hnaddr[i] == '.' || hnaddr[i] == '-'))
+                         (hnaddr[i] >= 'A' && hnaddr[i] <= 'Z') ||
+                         hnaddr[i] == '.' || hnaddr[i] == '-' || hnaddr[i] == '_'))
                     {
                         return FALSE;
                     }
