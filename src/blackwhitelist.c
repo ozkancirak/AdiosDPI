@@ -50,25 +50,27 @@ static int check_get_hostname(const char *host) {
 }
 
 static int add_hostname(const char *host) {
+    blackwhitelist_record_t *tmp_record;
+    char *host_c;
+
     if (!host)
         return FALSE;
-
-    blackwhitelist_record_t *tmp_record = malloc(sizeof(blackwhitelist_record_t));
-    char *host_c = NULL;
-
-    if (!check_get_hostname(host)) {
-        host_c = strdup(host);
-        tmp_record->host = host_c;
-        HASH_ADD_KEYPTR(hh, blackwhitelist, tmp_record->host,
-                        strlen(tmp_record->host), tmp_record);
-        debug("Added host %s\n", host_c);
-        return TRUE;
+    if (check_get_hostname(host)) {
+        debug("Not added host %s\n", host);
+        return FALSE;
     }
-    debug("Not added host %s\n", host);
-    free(tmp_record);
-    if (host_c)
+    tmp_record = malloc(sizeof(blackwhitelist_record_t));
+    host_c = strdup(host);
+    if (!tmp_record || !host_c) {
+        free(tmp_record);
         free(host_c);
-    return FALSE;
+        return FALSE;
+    }
+    tmp_record->host = host_c;
+    HASH_ADD_KEYPTR(hh, blackwhitelist, tmp_record->host,
+                    strlen(tmp_record->host), tmp_record);
+    debug("Added host %s\n", host_c);
+    return TRUE;
 }
 
 /* Host names are not case sensitive, so the table and the names to look up are all lowercase. */
@@ -99,13 +101,18 @@ static void get_stamp(const char *path, struct stamp *stamp) {
 }
 
 static int read_list(const char *filename, const char *verb) {
-    char *line = malloc(HOST_MAXLEN + 1);
+    char *line;
     size_t linelen = HOST_MAXLEN + 1;
     int cnt = 0;
     ssize_t read;
 
     FILE *fp = fopen(filename, "r");
     if (!fp) return FALSE;
+    line = malloc(linelen);
+    if (!line) {
+        fclose(fp);
+        return FALSE;
+    }
 
     while ((read = getline(&line, &linelen, fp)) != -1) {
         /* works with both \n and \r\n */
