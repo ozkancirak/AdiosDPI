@@ -159,7 +159,7 @@ enum ERROR_CODE{
 };
 
 static int running_from_service = 0;
-static int exiting = 0;
+static volatile int exiting = 0;
 static HANDLE filters[MAX_FILTERS];
 static int filter_num = 0;
 static const char http10_redirect_302[] = "HTTP/1.0 302 ";
@@ -385,10 +385,23 @@ void deinit_all() {
     }
 }
 
-static void sigint_handler(int sig __attribute__((unused))) {
+/*
+ * Asks the main loop to finish. It only wakes the loop up (a shut down handle fails
+ * WinDivertRecv with ERROR_NO_DATA); the handles are closed by main() afterwards,
+ * so nothing is closed while the loop is still using it. Safe to call from another thread.
+ */
+void shutdown_all(void) {
+    int i;
+
     exiting = 1;
-    deinit_all();
-    exit(EXIT_SUCCESS);
+    for (i = 0; i < filter_num; i++) {
+        if (filters[i])
+            WinDivertShutdown(filters[i], WINDIVERT_SHUTDOWN_BOTH);
+    }
+}
+
+static void sigint_handler(int sig __attribute__((unused))) {
+    shutdown_all();
 }
 
 static void mix_case(char *pktdata, unsigned int pktlen) {
@@ -1662,4 +1675,6 @@ int main(int argc, char *argv[]) {
                 printf("Error receiving a packet (error %lu), continuing.\n", err);
         }
     }
+    deinit_all();
+    return 0;
 }

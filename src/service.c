@@ -86,9 +86,11 @@ void service_controlhandler(DWORD request)
     {
         case SERVICE_CONTROL_STOP:
         case SERVICE_CONTROL_SHUTDOWN:
-            deinit_all();
+            /* service_main() reports SERVICE_STOPPED once main() has returned. */
+            shutdown_all();
             ServiceStatus.dwWin32ExitCode = 0;
-            ServiceStatus.dwCurrentState  = SERVICE_STOPPED;
+            ServiceStatus.dwCurrentState  = SERVICE_STOP_PENDING;
+            ServiceStatus.dwWaitHint      = 10000;
         default:
             break;
     }

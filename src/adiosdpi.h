@@ -9,3 +9,4 @@
 
 int main(int argc, char *argv[]);
 void deinit_all();
+void shutdown_all(void);
