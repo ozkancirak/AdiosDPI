@@ -319,19 +319,21 @@ int send_fake_https_request(const HANDLE w_filter,
     return ret;
 }
 
+/* Takes over data (malloc'ed by the caller); frees it again if the fake can't be kept. */
 static int fake_add(const unsigned char *data, size_t size) {
-    struct fake_t *fake = malloc(sizeof(struct fake_t));
+    struct fake_t *fake = NULL;
+
+    /* Slots are filled in order, so fakes_count is the next free one. */
+    if (fakes_count < (int)(sizeof(fakes) / sizeof(*fakes)))
+        fake = malloc(sizeof(struct fake_t));
+    if (!fake) {
+        free((void *)data);
+        return 3;
+    }
     fake->size = size;
     fake->data = data;
-
-    for (size_t k = 0; k <= sizeof(fakes) / sizeof(*fakes); k++) {
-        if (!fakes[k]) {
-            fakes[k] = fake;
-            fakes_count++;
-            return 0;
-        }
-    }
-    return 3;
+    fakes[fakes_count++] = fake;
+    return 0;
 }
 
 int fake_load_from_hex(const char *data) {
