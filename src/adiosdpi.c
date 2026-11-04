@@ -70,6 +70,7 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
 #define PASSIVE_TEMPLATE "#PASSIVE#"
 #define TCPOFF_TEMPLATE "#TCPOFF#"
 #define SYNACK_TEMPLATE "#SYNACK#"
+#define HTTPALL_TEMPLATE "#HTTPALL#"
 #define FILTER_STRING_TEMPLATE \
         "(" TCPOFF_TEMPLATE "tcp and !impostor and !loopback " MAXPAYLOADSIZE_TEMPLATE " and " \
         "((inbound and (" \
@@ -83,8 +84,8 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
          ")" \
          " and (" DIVERT_NO_LOCALNETSv4_SRC " or " DIVERT_NO_LOCALNETSv6_SRC "))) or " \
         "(outbound and " \
-         /* On 443 only the first segment of a TLS handshake record is rewritten. */ \
-         "((tcp.DstPort == 443 and tcp.Payload[0] == 0x16 and tcp.Payload[1] == 0x03) or " \
+         /* On 443 only the first segment of a TLS handshake record is rewritten, unless -w looks for HTTP there. */ \
+         "((tcp.DstPort == 443 and (" HTTPALL_TEMPLATE "tcp.Payload[0] == 0x16 and tcp.Payload[1] == 0x03)) or " \
           "tcp.DstPort == 80) and tcp.Ack and tcp.PayloadLength > 0 and " \
          "(" DIVERT_NO_LOCALNETSv4_DST " or " DIVERT_NO_LOCALNETSv6_DST "))" \
         "))"
@@ -262,7 +263,7 @@ static void add_maxpayloadsize_str(unsigned short maxpayload) {
     filter_string = newstr;
 }
 
-static void finalize_filter_strings(int passive, int tcp, int synack) {
+static void finalize_filter_strings(int passive, int tcp, int synack, int http_all) {
     char *newstr, *newstr2;
 
     newstr2 = repl_str(filter_string, IPID_TEMPLATE, "");
@@ -274,8 +275,10 @@ static void finalize_filter_strings(int passive, int tcp, int synack) {
     free(newstr2);
     newstr2 = repl_str(newstr, SYNACK_TEMPLATE, synack ? "" : "false and ");
     free(newstr);
+    newstr = repl_str(newstr2, HTTPALL_TEMPLATE, http_all ? "true or " : "");
+    free(newstr2);
     free(filter_string);
-    filter_string = newstr2;
+    filter_string = newstr;
 
     newstr = repl_str(filter_passive_string, IPID_TEMPLATE, "");
     free(filter_passive_string);
@@ -1203,7 +1206,8 @@ int main(int argc, char *argv[]) {
         do_fragment_https || do_fragment_http_persistent,
         /* A server's SYN+ACK is used to shrink its window and to measure its distance. */
         (!do_native_frag && (do_fragment_http || do_fragment_https)) ||
-        (do_fake_packet && (do_auto_ttl || ttl_min_nhops)));
+        (do_fake_packet && (do_auto_ttl || ttl_min_nhops)),
+        do_http_allports);
     {
         char others[512];
         if (windivert_users(others, sizeof(others), 0))
