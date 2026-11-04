@@ -71,6 +71,9 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
 #define TCPOFF_TEMPLATE "#TCPOFF#"
 #define SYNACK_TEMPLATE "#SYNACK#"
 #define HTTPALL_TEMPLATE "#HTTPALL#"
+#define HTTPREQ_TEMPLATE "#HTTPREQ#"
+/* GET, HEAD, POST, PUT, DELETE, CONNECT and OPTIONS: the first four bytes of every HTTP request. */
+#define HTTP_METHODS_FILTER "tcp.Payload32[0] == 0x47455420 or tcp.Payload32[0] == 0x48454144 or tcp.Payload32[0] == 0x504F5354 or tcp.Payload32[0] == 0x50555420 or tcp.Payload32[0] == 0x44454C45 or tcp.Payload32[0] == 0x434F4E4E or tcp.Payload32[0] == 0x4F505449"
 #define FILTER_STRING_TEMPLATE \
         "(" TCPOFF_TEMPLATE "tcp and !impostor and !loopback " MAXPAYLOADSIZE_TEMPLATE " and " \
         "((inbound and (" \
@@ -86,7 +89,7 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
         "(outbound and " \
          /* On 443 only the first segment of a TLS handshake record is rewritten, unless -w looks for HTTP there. */ \
          "((tcp.DstPort == 443 and (" HTTPALL_TEMPLATE "tcp.Payload[0] == 0x16 and tcp.Payload[1] == 0x03)) or " \
-          "tcp.DstPort == 80) and tcp.Ack and tcp.PayloadLength > 0 and " \
+          "(tcp.DstPort == 80 and (" HTTPREQ_TEMPLATE HTTP_METHODS_FILTER "))) and tcp.Ack and tcp.PayloadLength > 0 and " \
          "(" DIVERT_NO_LOCALNETSv4_DST " or " DIVERT_NO_LOCALNETSv6_DST "))" \
         "))"
 #define FILTER_PASSIVE_BLOCK_QUIC "outbound and !impostor and !loopback and udp " \
@@ -264,26 +267,31 @@ static void add_maxpayloadsize_str(unsigned short maxpayload) {
     filter_string = newstr;
 }
 
-static void finalize_filter_strings(int passive, int tcp, int synack, int http_all) {
-    char *newstr, *newstr2;
+/* Which parts of the filter the chosen options need. */
+struct filter_features {
+    int passive;        /* -p: inbound port 80 data, to drop redirects */
+    int tcp;            /* any TCP trick at all */
+    int synack;         /* inbound SYN+ACK: window size and distance */
+    int http_all;       /* -w: HTTP on port 443 too */
+    int http_requests;  /* port 80: only packets that start like an HTTP request */
+};
 
-    newstr2 = repl_str(filter_string, IPID_TEMPLATE, "");
-    newstr = repl_str(newstr2, MAXPAYLOADSIZE_TEMPLATE, "");
-    free(newstr2);
-    newstr2 = repl_str(newstr, PASSIVE_TEMPLATE, passive ? "" : "false and ");
-    free(newstr);
-    newstr = repl_str(newstr2, TCPOFF_TEMPLATE, tcp ? "" : "false and ");
-    free(newstr2);
-    newstr2 = repl_str(newstr, SYNACK_TEMPLATE, synack ? "" : "false and ");
-    free(newstr);
-    newstr = repl_str(newstr2, HTTPALL_TEMPLATE, http_all ? "true or " : "");
-    free(newstr2);
-    free(filter_string);
-    filter_string = newstr;
+static void replace_token(char **str, const char *token, const char *with) {
+    char *newstr = repl_str(*str, token, with);
 
-    newstr = repl_str(filter_passive_string, IPID_TEMPLATE, "");
-    free(filter_passive_string);
-    filter_passive_string = newstr;
+    free(*str);
+    *str = newstr;
+}
+
+static void finalize_filter_strings(const struct filter_features *f) {
+    replace_token(&filter_string, IPID_TEMPLATE, "");
+    replace_token(&filter_string, MAXPAYLOADSIZE_TEMPLATE, "");
+    replace_token(&filter_string, PASSIVE_TEMPLATE, f->passive ? "" : "false and ");
+    replace_token(&filter_string, TCPOFF_TEMPLATE, f->tcp ? "" : "false and ");
+    replace_token(&filter_string, SYNACK_TEMPLATE, f->synack ? "" : "false and ");
+    replace_token(&filter_string, HTTPALL_TEMPLATE, f->http_all ? "true or " : "");
+    replace_token(&filter_string, HTTPREQ_TEMPLATE, f->http_requests ? "" : "true or ");
+    replace_token(&filter_passive_string, IPID_TEMPLATE, "");
 }
 
 static char* dumb_memmem(const char* haystack, unsigned int hlen,
@@ -1220,14 +1228,21 @@ int main(int argc, char *argv[]) {
     if (max_payload_size)
         add_maxpayloadsize_str(max_payload_size);
     /* Without any TCP feature the driver has no TCP packet to hand us. */
-    finalize_filter_strings(do_passivedpi,
-        do_passivedpi || do_fake_packet || do_native_frag || do_host ||
-        do_host_removespace || do_host_mixedcase || do_fragment_http ||
-        do_fragment_https || do_fragment_http_persistent,
-        /* A server's SYN+ACK is used to shrink its window and to measure its distance. */
-        (!do_native_frag && (do_fragment_http || do_fragment_https)) ||
-        (do_fake_packet && (do_auto_ttl || ttl_min_nhops)),
-        do_http_allports);
+    {
+        struct filter_features features = {
+            .passive = do_passivedpi,
+            .tcp = do_passivedpi || do_fake_packet || do_native_frag || do_host ||
+                   do_host_removespace || do_host_mixedcase || do_fragment_http ||
+                   do_fragment_https || do_fragment_http_persistent,
+            /* A server's SYN+ACK is used to shrink its window and to measure its distance. */
+            .synack = (!do_native_frag && (do_fragment_http || do_fragment_https)) ||
+                      (do_fake_packet && (do_auto_ttl || ttl_min_nhops)),
+            .http_all = do_http_allports,
+            /* Window size fragmentation makes the client send the rest of a method alone. */
+            .http_requests = !(do_fragment_http && !do_native_frag),
+        };
+        finalize_filter_strings(&features);
+    }
     {
         char others[512];
         if (windivert_users(others, sizeof(others), 0))
