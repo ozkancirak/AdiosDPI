@@ -221,7 +221,16 @@ static int doh_lookup(const char *domain, uint32_t *out) {
     return n;
 }
 
-static void print_addrs(const uint32_t *a, int n) {
+static double now_ms(void) {
+    LARGE_INTEGER freq, count;
+
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return (double)count.QuadPart * 1000.0 / (double)freq.QuadPart;
+}
+
+/* The time is how long the answer took; a source that did not answer shows its time-out. */
+static void print_addrs(const uint32_t *a, int n, double ms) {
     int i;
     if (!n)
         printf("(no answer)");
@@ -229,7 +238,7 @@ static void print_addrs(const uint32_t *a, int n) {
         const unsigned char *b = (const unsigned char *)&a[i];
         printf("%s%u.%u.%u.%u", i ? ", " : "", b[0], b[1], b[2], b[3]);
     }
-    printf("\n");
+    printf("  (%.0f ms)\n", ms);
 }
 
 /* What to do about poisoned answers: redirect plain DNS, which needs the plain server to answer. */
@@ -247,6 +256,7 @@ int dns_check(const char *domain, uint32_t server, uint16_t port) {
     uint32_t sys[MAX_ADDRS], plain[MAX_ADDRS], doh[MAX_ADDRS];
     const unsigned char *sb;
     char label[24];
+    double t0, t1, t2, t3;
     int ns, np, nd, i, j, k, blocked = 0, common = 0, result;
 
     if (!server) {
@@ -259,16 +269,20 @@ int dns_check(const char *domain, uint32_t server, uint16_t port) {
         return 2;
     }
 
+    t0 = now_ms();
     ns = system_lookup(domain, sys);
+    t1 = now_ms();
     np = plain_lookup(domain, server, port, plain);
-    nd = doh_lookup(domain, doh);
+    t2 = now_ms();
+    nd = doh_lookup(domain, doh);          /* its time includes the HTTPS handshake */
+    t3 = now_ms();
     snprintf(label, sizeof(label), "%u.%u.%u.%u:%u", sb[0], sb[1], sb[2], sb[3], ntohs(port));
     printf("DNS check for %s\n  %-21s: ", domain, "system resolver");
-    print_addrs(sys, ns);
+    print_addrs(sys, ns, t1 - t0);
     printf("  %-21s: ", label);
-    print_addrs(plain, np);
+    print_addrs(plain, np, t2 - t1);
     printf("  %-21s: ", DOH_LABEL);
-    print_addrs(doh, nd);
+    print_addrs(doh, nd, t3 - t2);
 
     for (i = 0; i < ns; i++) {
         for (k = 0; k < (int)(sizeof(block_pages) / sizeof(*block_pages)); k++)
