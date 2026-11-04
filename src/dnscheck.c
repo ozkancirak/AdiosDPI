@@ -17,8 +17,8 @@
 #define MAX_ADDRS 16
 #define TIMEOUT_MS 3000
 
-static const unsigned char default_server[4] = {77, 88, 8, 8};
-#define DEFAULT_PORT 1253
+static const unsigned char default_server[4] = {9, 9, 9, 10};   /* what the presets use (preset.c) */
+#define DEFAULT_PORT 9953
 
 /* The DoH server: Cloudflare, asked for the DNS message itself (RFC 8484), by address so no name lookup is needed. */
 #define DOH_HOST L"1.1.1.1"

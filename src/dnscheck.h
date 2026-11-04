@@ -6,7 +6,7 @@
  * Asks the system resolver, a plain DNS server and a DNS over HTTPS server
  * (1.1.1.1) for the IPv4 addresses of domain, prints the answers and says whether
  * the system one looks poisoned.
- * server and port are in network byte order; 0 means 77.88.8.8 port 1253.
+ * server and port are in network byte order; 0 means 9.9.9.10 port 9953.
  *
  * Returns 0 when no poisoning was found (the answers agree, or differ the way a
  * CDN makes them differ), 1 when the system resolver gives a block page address

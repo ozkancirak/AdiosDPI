@@ -1101,7 +1101,7 @@ int main(int argc, char *argv[]) {
                 " --dnsv6-port  <value>    redirect UDPv6 DNS requests to the supplied port (53 by default)\n"
                 " --dns-verb               print verbose DNS redirection messages\n"
                 " --dns-check   <domain>   compare the system DNS answer for the domain with a plain DNS server\n"
-                "                          (77.88.8.8 port 1253, or --dns-addr and --dns-port) and with DNS over HTTPS\n"
+                "                          (9.9.9.10 port 9953, or --dns-addr and --dns-port) and with DNS over HTTPS\n"
                 "                          (1.1.1.1), then exit.\n"
                 " --preset      <name>     use a ready set of options: dns, dns-5, dns-9, dns-ttl5,\n"
                 "                          dns-ttl3 or ttl3.\n"
