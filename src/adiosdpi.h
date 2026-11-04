@@ -1,5 +1,5 @@
 #define HOST_MAXLEN 253
-#define MAX_PACKET_SIZE 9016
+#define MAX_PACKET_SIZE 65575  /* WINDIVERT_MTU_MAX: no captured packet is bigger */
 
 #ifndef DEBUG
 #define debug(...) do {} while (0)

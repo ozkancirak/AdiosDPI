@@ -1221,9 +1221,11 @@ int main(int argc, char *argv[]) {
     }
     printf("Filter activated, AdiosDPI is now running!\n");
     signal(SIGINT, sigint_handler);
+    unsigned int recv_failures = 0;
 
     while (1) {
         if (WinDivertRecv(w_filter, packet, sizeof(packet), &packetLen, &addr)) {
+            recv_failures = 0;
             debug("Got %s packet, len=%d!\n", addr.Outbound ? "outbound" : "inbound",
                    packetLen);
             should_reinject = 1;
@@ -1604,10 +1606,17 @@ int main(int argc, char *argv[]) {
             }
         }
         else {
-            // error, ignore
-            if (!exiting)
-                printf("Error receiving packet!\n");
-            break;
+            DWORD err = GetLastError();
+            /* The handle was shut down: this is the normal way out. */
+            if (exiting || err == ERROR_NO_DATA || err == ERROR_INVALID_HANDLE)
+                break;
+            /* Anything else costs one packet at most, and TCP resends it. */
+            if (++recv_failures > 100) {
+                printf("Too many receive errors (last error %lu), giving up.\n", err);
+                break;
+            }
+            if (recv_failures == 1)
+                printf("Error receiving a packet (error %lu), continuing.\n", err);
         }
     }
 }
