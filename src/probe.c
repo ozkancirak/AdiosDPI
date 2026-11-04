@@ -12,14 +12,26 @@
 #define START_WAIT_MS 3000
 #define STOP_WAIT_MS 5000
 
+/*
+ * Least intrusive first. The fixed TTL variants are mode -5 with a fake packet
+ * that dies after N hops: the right N depends on how far away the ISP's DPI is,
+ * so the probe measures it instead of guessing one number for everybody.
+ */
+#define MODE5 "-f 2 -e 2 --reverse-frag --max-payload"
 static const struct {
     const char *label;
     const char *args;       /* NULL: no tool at all */
 } candidates[] = {
-    {"no tool",       NULL},
-    {"--preset dns",  "--preset dns"},
-    {"--preset dns-5", "--preset dns-5"},
-    {"--preset dns-9", "--preset dns-9"},
+    {"no tool",            NULL},
+    {"dns",                "--preset dns"},
+    {"mode -5",            "-5"},
+    {"mode -9",            "-9"},
+    {"dns + mode -5",      "--preset dns-5"},
+    {"dns + mode -9",      "--preset dns-9"},
+    {"dns + ttl 3",        "--preset dns " MODE5 " --set-ttl 3"},
+    {"dns + ttl 4",        "--preset dns " MODE5 " --set-ttl 4"},
+    {"dns + ttl 5",        "--preset dns " MODE5 " --set-ttl 5"},
+    {"dns + ttl 6",        "--preset dns " MODE5 " --set-ttl 6"},
 };
 #define CANDIDATE_COUNT (sizeof(candidates) / sizeof(*candidates))
 
