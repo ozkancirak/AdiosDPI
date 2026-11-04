@@ -8,6 +8,11 @@
 int tls_is_handshake_record(const char *data, unsigned int len);
 
 /*
+ * Is this the start of a ClientHello that goes on in the next segment?
+ */
+int tls_hello_incomplete(const char *data, unsigned int len);
+
+/*
  * Finds the server name (SNI) in a ClientHello. On success the name is at *host in the
  * data itself, *host_len long, and it is not null terminated. A name cut off by the end
  * of the data does not count.

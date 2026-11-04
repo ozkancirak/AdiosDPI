@@ -18,6 +18,7 @@
 #include "utils/repl_str.h"
 #include "service.h"
 #include "tls.h"
+#include "reasm.h"
 #include "dnsredir.h"
 #include "dnscheck.h"
 #include "preset.h"
@@ -197,6 +198,7 @@ static struct option long_options[] = {
     {"allow-no-sni",no_argument,       0,  ']' },
     {"frag-by-sni", no_argument,       0,  '>' },
     {"frag-in-sni", no_argument,       0,  'M' },
+    {"reasm",       no_argument,       0,  'R' },
     {"ip-id",       required_argument, 0,  'i' },
     {"set-ttl",     required_argument, 0,  '$' },
     {"min-ttl",     required_argument, 0,  '[' },
@@ -642,6 +644,7 @@ int main(int argc, char *argv[]) {
         do_allow_no_sni = 0,
         do_fragment_by_sni = 0,
         do_fragment_in_sni = 0,
+        do_reasm = 0,
         do_fake_packet = 0,
         do_auto_ttl = 0,
         do_wrong_chksum = 0,
@@ -939,6 +942,9 @@ int main(int argc, char *argv[]) {
                 break;
             case 'L': // --log, already opened above
                 break;
+            case 'R': // --reasm
+                do_reasm = 1;
+                break;
             case 'M': // --frag-in-sni
                 do_fragment_by_sni = do_fragment_in_sni = 1;
                 break;
@@ -1074,6 +1080,9 @@ int main(int argc, char *argv[]) {
                 " --blacklist   <txtfile>  perform circumvention tricks only to host names and subdomains from\n"
                 "                          supplied text file (HTTP Host/TLS SNI).\n"
                 "                          This option can be supplied multiple times.\n"
+                " --reasm                 when the server name is not in the first segment of a ClientHello, hold that segment\n"
+                "                          until the next one comes, so --blacklist and --frag-by-sni can use the name.\n"
+                "                          Diverts all outgoing HTTPS data, which costs CPU on uploads.\n"
                 " --allow-no-sni           perform circumvention if TLS SNI can't be detected with --blacklist enabled.\n"
                 " --frag-by-sni            if SNI is detected in TLS packet, fragment the packet right before SNI value.\n"
                 " --frag-in-sni            same, but fragment in the middle of the SNI value (needs --native-frag,\n"
@@ -1225,7 +1234,7 @@ int main(int argc, char *argv[]) {
             /* A server's SYN+ACK is used to shrink its window and to measure its distance. */
             .synack = (!do_native_frag && (do_fragment_http || do_fragment_https)) ||
                       (do_fake_packet && (do_auto_ttl || ttl_min_nhops)),
-            .http_all = do_http_allports,
+            .http_all = do_http_allports || do_reasm,  /* the second segment of a ClientHello is not a handshake record */
             /* Window size fragmentation makes the client send the rest of a method alone. */
             .http_requests = !(do_fragment_http && !do_native_frag),
         };
@@ -1279,10 +1288,14 @@ int main(int argc, char *argv[]) {
     printf("Filter activated, AdiosDPI is now running!\n");
     signal(SIGINT, sigint_handler);
     unsigned int recv_failures = 0;
+    struct reasm_result reasm;
 
     while (1) {
-        if (WinDivertRecv(w_filter, packet, sizeof(packet), &packetLen, &addr)) {
+        memset(&reasm, 0, sizeof(reasm));
+        if (reasm_next(packet, sizeof(packet), &packetLen, &addr, &reasm) ||
+            WinDivertRecv(w_filter, packet, sizeof(packet), &packetLen, &addr)) {
             recv_failures = 0;
+            reasm_expire(w_filter);
             debug("Got %s packet, len=%d!\n", addr.Outbound ? "outbound" : "inbound",
                    packetLen);
             should_reinject = 1;
@@ -1334,6 +1347,10 @@ int main(int argc, char *argv[]) {
                 //printf("Got parsed packet, len=%d!\n", packet_dataLen);
                 /* Got a TCP packet WITH DATA */
 
+                /* The segment after a held back ClientHello: both go on, in order, once the name is known. */
+                if (do_reasm && addr.Outbound && reasm_join(packet, packetLen, &addr))
+                    continue;
+
                 /* Handle INBOUND packet with data and find HTTP REDIRECT in there */
                 if (!addr.Outbound && packet_dataLen > 16) {
                     /* If INBOUND packet with DATA (tcp.Ack) */
@@ -1373,8 +1390,25 @@ int main(int argc, char *argv[]) {
                     if (tls_is_handshake_record(packet_data, packet_dataLen))
                     {
                         if (do_blacklist || do_fragment_by_sni) {
-                            sni_ok = tls_extract_sni(packet_data, packet_dataLen,
-                                        &host_addr, &host_len);
+                            if (reasm.known) {
+                                /* A held back ClientHello: the name was looked up in both of its segments. */
+                                sni_ok = reasm.sni_ok;
+                                host_addr = reasm.host;
+                                host_len = reasm.host_len;
+                                if (do_tcp_verb) {
+                                    if (sni_ok)
+                                        printf("Joined a ClientHello of two segments, server name %.*s\n",
+                                               (int)host_len, host_addr);
+                                    else
+                                        printf("Joined a ClientHello of two segments, no server name in it\n");
+                                }
+                            } else {
+                                sni_ok = tls_extract_sni(packet_data, packet_dataLen,
+                                            &host_addr, &host_len);
+                                if (!sni_ok && do_reasm && tls_hello_incomplete(packet_data, packet_dataLen) &&
+                                    reasm_hold(packet, packetLen, &addr))
+                                    continue;
+                            }
                         }
                         if (
                              (do_blacklist && sni_ok &&
@@ -1525,7 +1559,7 @@ int main(int argc, char *argv[]) {
                         current_fragment_size = http_fragment_size;
                     }
                     else if (do_fragment_https && ppTcpHdr->DstPort != htons(80)) {
-                        if (do_fragment_by_sni && sni_ok) {
+                        if (do_fragment_by_sni && sni_ok && !reasm.known) {   /* a name in the next segment is no place to split this one */
                             current_fragment_size = (unsigned int)(host_addr - (char *)packet_data);
                             if (do_fragment_in_sni)
                                 current_fragment_size += host_len / 2;

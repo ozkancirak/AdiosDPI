@@ -12,6 +12,14 @@ int tls_is_handshake_record(const char *data, unsigned int len) {
            (len >= 3 && (memcmp(data, "\x16\x03\x01", 3) == 0 || memcmp(data, "\x16\x03\x03", 3) == 0));
 }
 
+int tls_hello_incomplete(const char *data, unsigned int len) {
+    const unsigned char *d = (const unsigned char *)data;
+
+    /* record type 22, version 3.x, handshake type 1 (ClientHello), and fewer bytes than the record length says */
+    return len >= 6 && d[0] == 0x16 && d[1] == 0x03 && d[5] == 0x01 &&
+           len < 5u + (((unsigned int)d[3] << 8) | d[4]);
+}
+
 /**
  * Very crude Server Name Indication (TLS ClientHello hostname) extractor.
  */
