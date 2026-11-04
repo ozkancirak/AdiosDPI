@@ -11,7 +11,7 @@
 #include <wchar.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <winhttp.h>
+#include "lazydll.h"
 #include "dnscheck.h"
 
 #define MAX_ADDRS 16
@@ -181,40 +181,43 @@ static int doh_lookup(const char *domain, uint32_t *out) {
     unsigned char q[300], r[1500];
     wchar_t path[512] = L"/dns-query?dns=";
     HINTERNET session, conn, req;
+    const struct winhttp_api *w = winhttp_api();
     DWORD got = 0, total = 0, status = 0, size = sizeof(status);
     int len, n = 0;
 
     len = build_query(domain, q, (int)sizeof(q));
     if (!len)
         return 0;
+    if (!w)
+        return 0;
     q[0] = q[1] = 0;            /* RFC 8484 asks for id 0 */
     base64url(q, len, path + wcslen(path));
 
-    session = WinHttpOpen(L"AdiosDPI", WINHTTP_ACCESS_TYPE_NO_PROXY,
+    session = w->WinHttpOpen(L"AdiosDPI", WINHTTP_ACCESS_TYPE_NO_PROXY,
                           WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!session)
         return 0;
-    WinHttpSetTimeouts(session, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS, 2 * TIMEOUT_MS);
-    conn = WinHttpConnect(session, DOH_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    w->WinHttpSetTimeouts(session, TIMEOUT_MS, TIMEOUT_MS, TIMEOUT_MS, 2 * TIMEOUT_MS);
+    conn = w->WinHttpConnect(session, DOH_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (conn) {
-        req = WinHttpOpenRequest(conn, L"GET", path, NULL, WINHTTP_NO_REFERER,
+        req = w->WinHttpOpenRequest(conn, L"GET", path, NULL, WINHTTP_NO_REFERER,
                                  WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
         if (req) {
-            if (WinHttpSendRequest(req, L"Accept: application/dns-message", (DWORD)-1L,
+            if (w->WinHttpSendRequest(req, L"Accept: application/dns-message", (DWORD)-1L,
                                    WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-                WinHttpReceiveResponse(req, NULL) &&
-                WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                w->WinHttpReceiveResponse(req, NULL) &&
+                w->WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                                     WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX) &&
                 status == 200) {
-                while (total < sizeof(r) && WinHttpReadData(req, r + total, (DWORD)sizeof(r) - total, &got) && got)
+                while (total < sizeof(r) && w->WinHttpReadData(req, r + total, (DWORD)sizeof(r) - total, &got) && got)
                     total += got;
                 n = parse_reply(r, (int)total, q, out);
             }
-            WinHttpCloseHandle(req);
+            w->WinHttpCloseHandle(req);
         }
-        WinHttpCloseHandle(conn);
+        w->WinHttpCloseHandle(conn);
     }
-    WinHttpCloseHandle(session);
+    w->WinHttpCloseHandle(session);
     return n;
 }
 

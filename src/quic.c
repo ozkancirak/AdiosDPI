@@ -1,11 +1,11 @@
 /*
  * QUIC Initial packets: recognizing them and building protected ones (RFC 9001).
- * Windows' own crypto (CNG) does the hashing and the AES, so there is nothing to link but bcrypt.
+ * Windows' own crypto (CNG) does the hashing and the AES; bcrypt.dll is loaded when it is first needed.
  */
 
 #include <windows.h>
-#include <bcrypt.h>
 #include <string.h>
+#include "lazydll.h"
 #include "quic.h"
 
 #define FAKE_DATAGRAM_SIZE 1250     /* a client Initial must be at least 1200 */
@@ -22,19 +22,25 @@ int quic_is_initial(const unsigned char *payload, unsigned int len) {
            payload[1] == 0 && payload[2] == 0 && payload[3] == 0 && payload[4] == 1;
 }
 
+static int random_bytes(unsigned char *buf, ULONG len) {
+    const struct bcrypt_api *b = bcrypt_api();
+    return b && b->BCryptGenRandom(NULL, buf, len, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+}
+
 static int hmac_sha256(const unsigned char *key, size_t key_len, const unsigned char *data, size_t data_len,
                        unsigned char out[32]) {
     BCRYPT_ALG_HANDLE alg = NULL;
     BCRYPT_HASH_HANDLE hash = NULL;
+    const struct bcrypt_api *b = bcrypt_api();
     int ok = 0;
 
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC_FLAG) == 0) {
-        if (BCryptCreateHash(alg, &hash, NULL, 0, (PUCHAR)key, (ULONG)key_len, 0) == 0) {
-            ok = BCryptHashData(hash, (PUCHAR)data, (ULONG)data_len, 0) == 0 &&
-                 BCryptFinishHash(hash, out, 32, 0) == 0;
-            BCryptDestroyHash(hash);
+    if (b && b->BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC_FLAG) == 0) {
+        if (b->BCryptCreateHash(alg, &hash, NULL, 0, (PUCHAR)key, (ULONG)key_len, 0) == 0) {
+            ok = b->BCryptHashData(hash, (PUCHAR)data, (ULONG)data_len, 0) == 0 &&
+                 b->BCryptFinishHash(hash, out, 32, 0) == 0;
+            b->BCryptDestroyHash(hash);
         }
-        BCryptCloseAlgorithmProvider(alg, 0);
+        b->BCryptCloseAlgorithmProvider(alg, 0);
     }
     return ok;
 }
@@ -78,14 +84,15 @@ static int aead_seal(const unsigned char key[16], const unsigned char iv[12],
     BCRYPT_ALG_HANDLE alg = NULL;
     BCRYPT_KEY_HANDLE handle = NULL;
     BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
+    const struct bcrypt_api *b = bcrypt_api();
     ULONG done = 0;
     int ok = 0;
 
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, NULL, 0) != 0)
+    if (!b || b->BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, NULL, 0) != 0)
         return 0;
-    if (BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_GCM,
+    if (b->BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_GCM,
                           sizeof(BCRYPT_CHAIN_MODE_GCM), 0) == 0 &&
-        BCryptGenerateSymmetricKey(alg, &handle, NULL, 0, (PUCHAR)key, 16, 0) == 0) {
+        b->BCryptGenerateSymmetricKey(alg, &handle, NULL, 0, (PUCHAR)key, 16, 0) == 0) {
         BCRYPT_INIT_AUTH_MODE_INFO(info);
         info.pbNonce = (PUCHAR)iv;
         info.cbNonce = 12;
@@ -93,29 +100,30 @@ static int aead_seal(const unsigned char key[16], const unsigned char iv[12],
         info.cbAuthData = (ULONG)aad_len;
         info.pbTag = out + len;
         info.cbTag = 16;
-        ok = BCryptEncrypt(handle, (PUCHAR)in, (ULONG)len, &info, NULL, 0, out, (ULONG)len, &done, 0) == 0;
-        BCryptDestroyKey(handle);
+        ok = b->BCryptEncrypt(handle, (PUCHAR)in, (ULONG)len, &info, NULL, 0, out, (ULONG)len, &done, 0) == 0;
+        b->BCryptDestroyKey(handle);
     }
-    BCryptCloseAlgorithmProvider(alg, 0);
+    b->BCryptCloseAlgorithmProvider(alg, 0);
     return ok;
 }
 
 /* The 5 byte header protection mask: AES-ECB of a 16 byte sample of the protected payload. */
 static int header_mask(const unsigned char hp[16], const unsigned char *sample, unsigned char mask[16]) {
+    const struct bcrypt_api *b = bcrypt_api();
     BCRYPT_ALG_HANDLE alg = NULL;
     BCRYPT_KEY_HANDLE handle = NULL;
     ULONG done = 0;
     int ok = 0;
 
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, NULL, 0) != 0)
+    if (!b || b->BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, NULL, 0) != 0)
         return 0;
-    if (BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_ECB,
+    if (b->BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_ECB,
                           sizeof(BCRYPT_CHAIN_MODE_ECB), 0) == 0 &&
-        BCryptGenerateSymmetricKey(alg, &handle, NULL, 0, (PUCHAR)hp, 16, 0) == 0) {
-        ok = BCryptEncrypt(handle, (PUCHAR)sample, 16, NULL, NULL, 0, mask, 16, &done, 0) == 0;
-        BCryptDestroyKey(handle);
+        b->BCryptGenerateSymmetricKey(alg, &handle, NULL, 0, (PUCHAR)hp, 16, 0) == 0) {
+        ok = b->BCryptEncrypt(handle, (PUCHAR)sample, 16, NULL, NULL, 0, mask, 16, &done, 0) == 0;
+        b->BCryptDestroyKey(handle);
     }
-    BCryptCloseAlgorithmProvider(alg, 0);
+    b->BCryptCloseAlgorithmProvider(alg, 0);
     return ok;
 }
 
@@ -188,8 +196,8 @@ static size_t build_client_hello(const char *sni, unsigned char *out, size_t siz
 
     if (name_len == 0 || name_len > 200 || size < 400)
         return 0;
-    if (BCryptGenRandom(NULL, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0 ||
-        BCryptGenRandom(NULL, share, sizeof(share), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+    if (!random_bytes(random, sizeof(random)) ||
+        !random_bytes(share, sizeof(share)))
         return 0;
 
     out[p++] = 0x01;                    /* ClientHello; the 3 byte length comes last */
@@ -245,7 +253,7 @@ size_t quic_make_fake_initial(const char *sni, unsigned char *out, size_t out_si
     if (out_size < FAKE_DATAGRAM_SIZE)
         return 0;
     hello_len = build_client_hello(sni, hello, sizeof(hello));
-    if (!hello_len || BCryptGenRandom(NULL, dcid, sizeof(dcid), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+    if (!hello_len || !random_bytes(dcid, sizeof(dcid)))
         return 0;
 
     /* header: flags, version, DCID length and value, no SCID, no token, 2 byte length, 4 byte packet number; then the tag */

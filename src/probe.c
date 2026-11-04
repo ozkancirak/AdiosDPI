@@ -3,7 +3,7 @@
  */
 
 #include <windows.h>
-#include <winhttp.h>
+#include "lazydll.h"
 #include <stdio.h>
 #include <string.h>
 #include "dnsredir.h"
@@ -40,28 +40,29 @@ static int https_reachable(const char *domain)
 {
     wchar_t host[256];
     HINTERNET session, conn, req;
+    const struct winhttp_api *w = winhttp_api();
     int ok = 0;
 
-    if (!MultiByteToWideChar(CP_UTF8, 0, domain, -1, host, 256))
+    if (!w || !MultiByteToWideChar(CP_UTF8, 0, domain, -1, host, 256))
         return 0;
-    session = WinHttpOpen(L"AdiosDPI", WINHTTP_ACCESS_TYPE_NO_PROXY,
+    session = w->WinHttpOpen(L"AdiosDPI", WINHTTP_ACCESS_TYPE_NO_PROXY,
                           WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!session)
         return 0;
-    WinHttpSetTimeouts(session, 5000, 5000, 5000, 8000);
-    conn = WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    w->WinHttpSetTimeouts(session, 5000, 5000, 5000, 8000);
+    conn = w->WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (conn) {
-        req = WinHttpOpenRequest(conn, L"HEAD", L"/", NULL, WINHTTP_NO_REFERER,
+        req = w->WinHttpOpenRequest(conn, L"HEAD", L"/", NULL, WINHTTP_NO_REFERER,
                                  WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
         if (req) {
-            ok = WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+            ok = w->WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                                     WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-                 WinHttpReceiveResponse(req, NULL);
-            WinHttpCloseHandle(req);
+                 w->WinHttpReceiveResponse(req, NULL);
+            w->WinHttpCloseHandle(req);
         }
-        WinHttpCloseHandle(conn);
+        w->WinHttpCloseHandle(conn);
     }
-    WinHttpCloseHandle(session);
+    w->WinHttpCloseHandle(session);
     return ok;
 }
 
