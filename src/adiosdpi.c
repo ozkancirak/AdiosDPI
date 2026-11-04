@@ -17,6 +17,7 @@
 #include "adiosdpi.h"
 #include "utils/repl_str.h"
 #include "service.h"
+#include "tls.h"
 #include "dnsredir.h"
 #include "dnscheck.h"
 #include "preset.h"
@@ -468,53 +469,6 @@ static int find_header_and_get_info(const char *pktdata, unsigned int pktlen,
         *hdrvaluelen = (uintptr_t)(data_addr_rn - *hdrvalueaddr);
         if (*hdrvaluelen >= 3 && *hdrvaluelen <= HOST_MAXLEN)
             return TRUE;
-    }
-    return FALSE;
-}
-
-/**
- * Very crude Server Name Indication (TLS ClientHello hostname) extractor.
- */
-static int extract_sni(const char *pktdata, unsigned int pktlen,
-                    char **hostnameaddr, unsigned int *hostnamelen) {
-    unsigned int ptr = 0;
-    unsigned const char *d = (unsigned const char *)pktdata;
-    unsigned const char *hnaddr = 0;
-    int hnlen = 0;
-
-    while (ptr + 8 < pktlen) {
-        /* Search for specific Extensions sequence */
-        if (d[ptr] == '\0' && d[ptr+1] == '\0' && d[ptr+2] == '\0' &&
-            d[ptr+4] == '\0' && d[ptr+6] == '\0' && d[ptr+7] == '\0' &&
-            /* Check Extension length, Server Name list length
-            *  and Server Name length relations
-            */
-            d[ptr+3] - d[ptr+5] == 2 && d[ptr+5] - d[ptr+8] == 3)
-            {
-                if (ptr + 8 + d[ptr+8] >= pktlen) {
-                    return FALSE;
-                }
-                hnaddr = &d[ptr+9];
-                hnlen = d[ptr+8];
-                /* Limit hostname size up to 253 bytes */
-                if (hnlen < 3 || hnlen > HOST_MAXLEN) {
-                    return FALSE;
-                }
-                /* Validate that hostname has only ascii letters, digits, dots, dashes and underscores */
-                for (int i=0; i<hnlen; i++) {
-                    if (!( (hnaddr[i] >= '0' && hnaddr[i] <= '9') ||
-                         (hnaddr[i] >= 'a' && hnaddr[i] <= 'z') ||
-                         (hnaddr[i] >= 'A' && hnaddr[i] <= 'Z') ||
-                         hnaddr[i] == '.' || hnaddr[i] == '-' || hnaddr[i] == '_'))
-                    {
-                        return FALSE;
-                    }
-                }
-                *hostnameaddr = (char*)hnaddr;
-                *hostnamelen = (unsigned int)hnlen;
-                return TRUE;
-            }
-        ptr++;
     }
     return FALSE;
 }
@@ -1416,11 +1370,10 @@ int main(int argc, char *argv[]) {
                      * In case of Window Size fragmentation=2, we'll receive only 2 byte packet.
                      * But if the packet is more than 2 bytes, check ClientHello byte.
                     */
-                    if ((packet_dataLen == 2 && memcmp(packet_data, "\x16\x03", 2) == 0) ||
-                        (packet_dataLen >= 3 && ( memcmp(packet_data, "\x16\x03\x01", 3) == 0 || memcmp(packet_data, "\x16\x03\x03", 3) == 0 )))
+                    if (tls_is_handshake_record(packet_data, packet_dataLen))
                     {
                         if (do_blacklist || do_fragment_by_sni) {
-                            sni_ok = extract_sni(packet_data, packet_dataLen,
+                            sni_ok = tls_extract_sni(packet_data, packet_dataLen,
                                         &host_addr, &host_len);
                         }
                         if (
@@ -1433,7 +1386,7 @@ int main(int argc, char *argv[]) {
                         {
 #ifdef DEBUG
                             char lsni[HOST_MAXLEN + 1] = {0};
-                            extract_sni(packet_data, packet_dataLen,
+                            tls_extract_sni(packet_data, packet_dataLen,
                                         &host_addr, &host_len);
                             memcpy(lsni, host_addr, host_len);
                             printf("Blocked HTTPS website SNI: %s\n", lsni);
