@@ -489,7 +489,7 @@ static int extract_sni(const char *pktdata, unsigned int pktlen,
             */
             d[ptr+3] - d[ptr+5] == 2 && d[ptr+5] - d[ptr+8] == 3)
             {
-                if (ptr + 8 + d[ptr+8] > pktlen) {
+                if (ptr + 8 + d[ptr+8] >= pktlen) {
                     return FALSE;
                 }
                 hnaddr = &d[ptr+9];
