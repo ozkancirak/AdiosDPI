@@ -186,8 +186,9 @@ static void dns_cleanup() {
 int dns_is_dns_packet(const char *packet_data, const UINT packet_dataLen, const int outgoing) {
     if (packet_dataLen < 16) return FALSE;
 
+    /* A request has no answer and no authority records (bytes 6 to 9). Additional records may carry EDNS. */
     if (outgoing && (ntohs(*(const uint16_t*)(packet_data + 2)) & 0xFA00) == 0 &&
-        (ntohs(*(const uint32_t*)(packet_data + 6))) == 0) {
+        !(packet_data[6] | packet_data[7] | packet_data[8] | packet_data[9])) {
         return TRUE;
     }
     else if (!outgoing &&
