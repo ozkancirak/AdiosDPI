@@ -488,7 +488,7 @@ int fake_load_from_sni(const char *domain_name) {
     const int sni_head_size = 9;
     const int packet_size = part0_size + part1_size + sni_head_size + name_size;
     // allocate memory
-    unsigned char *packet = malloc(packet_size);
+    unsigned char *packet = malloc((size_t)packet_size);
     if (!packet)
         return 3;
     // copy major parts of packet
@@ -512,7 +512,7 @@ int fake_load_from_sni(const char *domain_name) {
     set_uint16be(packet, part0_size + 4, name_size + 3);
     packet[part0_size + 6] = 0x00;
     set_uint16be(packet, part0_size + 7, name_size);
-    memcpy(&packet[part0_size + sni_head_size], domain_name, name_size);
+    memcpy(&packet[part0_size + sni_head_size], domain_name, (size_t)name_size);
     // add packet to fakes
-    return fake_add(packet, packet_size);
+    return fake_add(packet, (size_t)packet_size);
 }

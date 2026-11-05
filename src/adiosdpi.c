@@ -1081,7 +1081,7 @@ int main(int argc, char *argv[]) {
                 debug_exit = true;
                 break;
             default:
-                puts("Usage: adiosdpi.exe [OPTION...]\n"
+                fputs("Usage: adiosdpi.exe [OPTION...]\n"
                 " -p          block passive DPI\n"
                 " -q          block QUIC/HTTP3\n"
                 " -r          replace Host with hoSt\n"
@@ -1127,6 +1127,8 @@ int main(int argc, char *argv[]) {
                 " --frag-by-sni            if SNI is detected in TLS packet, fragment the packet right before SNI value.\n"
                 " --frag-in-sni            same, but fragment in the middle of the SNI value (needs --native-frag,\n"
                 "                          which the modes -5 to -9 have).\n"
+                , stdout);          /* two strings: one of this size is more than C99 compilers must accept */
+                puts(
                 " --set-ttl     <value>    activate Fake Request Mode and send it with supplied TTL value.\n"
                 "                          DANGEROUS! May break websites in unexpected ways. Use with care (or --blacklist).\n"
                 " --auto-ttl    [a1-a2-m]  activate Fake Request Mode, automatically detect TTL and decrease\n"
