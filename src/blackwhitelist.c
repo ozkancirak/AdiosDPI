@@ -193,6 +193,7 @@ int blackwhitelist_check_hostname(const char *host_addr, size_t host_len) {
 
     if (host_len > HOST_MAXLEN) return FALSE;
     reload_if_changed();
+    current_host[0] = '\0';             /* an empty name is looked up as such, not as what the stack held */
     if (host_addr && host_len) {
         memcpy(current_host, host_addr, host_len);
         current_host[host_len] = '\0';
