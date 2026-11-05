@@ -5,6 +5,8 @@
  * It's not a proper one. The caveats as follows:
  *    * Uses only source IP address and port as a hash key;
  *    * One-shot only. Removes conntrack record as soon as gets the reply;
+ *    * Remembers which of the (up to two) servers a query went to, and moves to the backup when
+ *      the same query is sent again without an answer;
  *    * Does not properly parse DNS request and response, only checks some bytes;
  *
  * But anyway, it works fine for DNS.
@@ -13,6 +15,7 @@
 #include <windows.h>
 #include <time.h>
 #include <stdio.h>
+#include <string.h>
 #include "adiosdpi.h"
 #include "dnsredir.h"
 #include "utils/uthash.h"
@@ -37,11 +40,59 @@ typedef struct udp_connrecord {
     time_t time;         /* time when this record was added */
     uint32_t dstip[4];
     uint16_t dstport;
+    ULONGLONG sent;      /* GetTickCount64() when the query was last sent */
+    uint16_t id;         /* DNS transaction id, as in the packet */
+    uint8_t server;      /* which server it went to: 0 the first, 1 the backup */
     UT_hash_handle hh;   /* makes this structure hashable */
 } udp_connrecord_t;
 
 static time_t last_cleanup = 0;
 static udp_connrecord_t *conntrack = NULL;
+
+/* A server that did not answer is left alone for this long, then it is tried again. */
+#define DNS_AVOID_MS 60000
+
+static struct {
+    dns_server_t server[2];
+    int count;                  /* 0: not used, 1: only the first, 2: first and backup */
+    ULONGLONG failed[2];        /* when each last failed to answer, 0 if never or answered since */
+    ULONGLONG alive[2];         /* when each last answered, 0 if never */
+} servers[2];                   /* [0] IPv4, [1] IPv6 */
+
+void dns_set_servers(uint8_t is_ipv6, const dns_server_t *first, const dns_server_t *backup)
+{
+    int f = is_ipv6 ? 1 : 0;
+
+    servers[f].server[0] = *first;
+    servers[f].count = 1;
+    if (backup) {
+        servers[f].server[1] = *backup;
+        servers[f].count = 2;
+    }
+    servers[f].failed[0] = servers[f].failed[1] = 0;
+    servers[f].alive[0] = servers[f].alive[1] = 0;
+}
+
+/*
+ * The first server, unless it failed lately and the backup did not. When both failed lately, the one
+ * that answered last; if neither ever did, the one that failed longer ago, so a query that nobody
+ * answers goes back and forth between them.
+ */
+static int choose_server(int f, ULONGLONG now)
+{
+    int first_bad, backup_bad;
+
+    if (servers[f].count < 2)
+        return 0;
+    first_bad = servers[f].failed[0] && now - servers[f].failed[0] < DNS_AVOID_MS;
+    backup_bad = servers[f].failed[1] && now - servers[f].failed[1] < DNS_AVOID_MS;
+    if (first_bad && backup_bad) {
+        if (servers[f].alive[0] != servers[f].alive[1])
+            return servers[f].alive[1] > servers[f].alive[0];
+        return servers[f].failed[0] <= servers[f].failed[1] ? 0 : 1;
+    }
+    return first_bad;
+}
 
 void flush_dns_cache() {
     INT_PTR WINAPI (*DnsFlushResolverCache)();
@@ -135,7 +186,8 @@ static int check_get_udp_conntrack_key(const char *key, udp_connrecord_t **connr
 
 static int add_udp_conntrack(const uint32_t srcip[4], const uint16_t srcport,
                              const uint32_t dstip[4], const uint16_t dstport,
-                             const uint8_t is_ipv6
+                             const uint8_t is_ipv6, const uint16_t id, const int server,
+                             const ULONGLONG now, udp_connrecord_t **added
                             )
 {
     if (!(srcip && srcport && dstip && dstport))
@@ -156,7 +208,11 @@ static int add_udp_conntrack(const uint32_t srcip[4], const uint16_t srcport,
             ipv4_copy_addr(tmp_connrecord->dstip, dstip);
         }
         tmp_connrecord->dstport = dstport;
+        tmp_connrecord->sent = now;
+        tmp_connrecord->id = id;
+        tmp_connrecord->server = (uint8_t)server;
         HASH_ADD_STR(conntrack, key, tmp_connrecord);
+        *added = tmp_connrecord;
         debug("Added UDP conntrack\n");
         return TRUE;
     }
@@ -203,28 +259,62 @@ int dns_is_dns_packet(const char *packet_data, const UINT packet_dataLen, const 
 int dns_handle_outgoing(const uint32_t *srcip, const uint16_t srcport,
                         const uint32_t *dstip, const uint16_t dstport,
                         const char *packet_data, const UINT packet_dataLen,
-                        const uint8_t is_ipv6)
+                        const uint8_t is_ipv6, dns_server_t *target)
 {
-    if (packet_dataLen < 16)
+    char key[UDP_CONNRECORD_KEY_LEN];
+    udp_connrecord_t *record = NULL;
+    int f = is_ipv6 ? 1 : 0;
+    uint16_t id;
+    ULONGLONG now;
+
+    if (packet_dataLen < 16 || !target || !servers[f].count)
         return FALSE;
 
     dns_cleanup();
 
-    if (dns_is_dns_packet(packet_data, packet_dataLen, 1)) {
-        /* Looks like DNS request */
-        debug("trying to add srcport = %hu, dstport = %hu\n", ntohs(srcport), ntohs(dstport));
-        return add_udp_conntrack(srcip, srcport, dstip, dstport, is_ipv6);
+    if (!dns_is_dns_packet(packet_data, packet_dataLen, 1)) {
+        debug("____dns_handle_outgoing FALSE: srcport = %hu, dstport = %hu\n", ntohs(srcport), ntohs(dstport));
+        return FALSE;
     }
-    debug("____dns_handle_outgoing FALSE: srcport = %hu, dstport = %hu\n", ntohs(srcport), ntohs(dstport));
-    return FALSE;
+    /* Looks like DNS request */
+    debug("trying to add srcport = %hu, dstport = %hu\n", ntohs(srcport), ntohs(dstport));
+    /* A query from a link-local address (Windows asking the router's own IPv6 address) cannot be answered
+     * by a server somewhere else. It is dropped; Windows asks the router's other addresses too. */
+    if (is_ipv6 && ((const uint8_t *)srcip)[0] == 0xfe && (((const uint8_t *)srcip)[1] & 0xc0) == 0x80)
+        return FALSE;
+    now = GetTickCount64();
+    memcpy(&id, packet_data, sizeof(id));
+
+    construct_key(srcip, srcport, key, is_ipv6);
+    if (check_get_udp_conntrack_key(key, &record)) {
+        /* The same query again from the same socket: no answer came (Windows asks again after a few
+         * seconds, and it asks every server it knows, so this may be another way to the same query).
+         * Another query on a socket that is still waiting is dropped, as it always was. */
+        if (record->id != id)
+            return FALSE;
+        if (servers[f].count == 2) {
+            servers[f].failed[record->server] = now;
+            record->server = (uint8_t)choose_server(f, now);
+        }
+        record->sent = now;
+        record->time = time(NULL);
+        *target = servers[f].server[record->server];
+        return TRUE;
+    }
+    if (!add_udp_conntrack(srcip, srcport, dstip, dstport, is_ipv6, id, choose_server(f, now), now, &record))
+        return FALSE;
+    *target = servers[f].server[record->server];
+    return TRUE;
 }
 
 int dns_handle_incoming(const uint32_t *srcip, const uint16_t srcport,
                         const char *packet_data, const UINT packet_dataLen,
-                        conntrack_info_t *conn_info, const uint8_t is_ipv6)
+                        conntrack_info_t *conn_info, const uint8_t is_ipv6,
+                        const uint32_t *from_ip, const uint16_t from_port)
 {
     char key[UDP_CONNRECORD_KEY_LEN];
     udp_connrecord_t *tmp_connrecord = NULL;
+    int f = is_ipv6 ? 1 : 0, s;
 
     if (packet_dataLen < 16 || !conn_info)
         return FALSE;
@@ -235,7 +325,14 @@ int dns_handle_incoming(const uint32_t *srcip, const uint16_t srcport,
         /* Looks like DNS response */
         construct_key(srcip, srcport, key, is_ipv6);
         if (check_get_udp_conntrack_key(key, &tmp_connrecord) && tmp_connrecord) {
-            /* Connection exists in conntrack, moving on */
+            /* Connection exists in conntrack, moving on. The server the answer came from is alive: it is
+             * judged by the address on the answer, not by where the query was last sent. */
+            for (s = 0; s < servers[f].count; s++)
+                if (servers[f].server[s].port == from_port &&
+                    memcmp(servers[f].server[s].ip, from_ip, is_ipv6 ? 16 : 4) == 0) {
+                    servers[f].failed[s] = 0;
+                    servers[f].alive[s] = GetTickCount64();
+                }
             deconstruct_key(key, tmp_connrecord, conn_info);
             HASH_DEL(conntrack, tmp_connrecord);
             free(tmp_connrecord);

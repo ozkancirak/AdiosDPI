@@ -192,6 +192,8 @@ static struct option long_options[] = {
     {"dns-port",    required_argument, 0,  'g' },
     {"dnsv6-addr",  required_argument, 0,  '!' },
     {"dnsv6-port",  required_argument, 0,  '@' },
+    {"dns-backup",  required_argument, 0,  'B' },
+    {"dnsv6-backup",required_argument, 0,  'C' },
     {"dns-verb",    no_argument,       0,  'v' },
     {"dns-check",   required_argument, 0,  'D' },
     {"log",         required_argument, 0,  'L' },
@@ -240,6 +242,68 @@ static void add_filter_str(int proto, int port) {
 
     filter_string = new_filter;
     free(current_filter);
+}
+
+/*
+ * Hands the answers of one DNS server to the program: those from this address and port, and nothing else.
+ * A backup may use a port other things use as well (5353 is also multicast DNS), so the port alone won't do.
+ */
+static void add_dns_reply_filter(int ipv6, const char *addr, int port) {
+    const char *fmt = " or (inbound and udp and !impostor and !loopback and %s.SrcAddr == %s and udp.SrcPort == %d)";
+    char *current_filter = filter_string;
+    size_t size = strlen(current_filter) + strlen(fmt) + strlen(addr) + 24;
+    char *new_filter = malloc(size);
+
+    if (!new_filter) {
+        puts("Out of memory.");
+        exit(ERROR_DEFAULT);
+    }
+    strcpy(new_filter, current_filter);
+    sprintf(new_filter + strlen(new_filter), fmt, ipv6 ? "ipv6" : "ip", addr, port);
+    filter_string = new_filter;
+    free(current_filter);
+}
+
+/*
+ * "1.2.3.4", "1.2.3.4:5353", "2001:db8::1" or "[2001:db8::1]:5353" to an address and a port (53 when
+ * there is none). The address is also given back as text for the filter.
+ */
+static int parse_dns_server(const char *text, int ipv6, dns_server_t *out, char *addr, size_t addr_size) {
+    const char *end = NULL, *colon;
+    unsigned long port = 53;
+    char *stop;
+    size_t len;
+
+    memset(out, 0, sizeof(*out));
+    if (ipv6 && text[0] == '[') {
+        end = strchr(text, ']');
+        if (!end || (end[1] != '\0' && end[1] != ':'))
+            return 0;
+        len = (size_t)(end - text - 1);
+        text++;
+        if (end[1] == ':') {
+            port = strtoul(end + 2, &stop, 10);
+            if (*stop)
+                return 0;
+        }
+    }
+    else if (!ipv6 && (colon = strchr(text, ':')) != NULL) {
+        len = (size_t)(colon - text);
+        port = strtoul(colon + 1, &stop, 10);
+        if (*stop)
+            return 0;
+    }
+    else {
+        len = strlen(text);
+    }
+    if (len == 0 || len >= addr_size || port == 0 || port > 65535)
+        return 0;
+    memcpy(addr, text, len);
+    addr[len] = '\0';
+    if (inet_pton(ipv6 ? AF_INET6 : AF_INET, addr, out->ip) != 1)
+        return 0;
+    out->port = htons((uint16_t)port);
+    return 1;
 }
 
 /* Hands outgoing QUIC Initial packets to the program as well. */
@@ -658,6 +722,9 @@ int main(int argc, char *argv[]) {
     PWINDIVERT_TCPHDR ppTcpHdr;
     PWINDIVERT_UDPHDR ppUdpHdr;
     conntrack_info_t dns_conn_info;
+    dns_server_t dns_target, dnsv4_backup, dnsv6_backup;
+    int have_dnsv4_backup = 0, have_dnsv6_backup = 0;
+    char dns_backup_text[64];
     tcp_conntrack_info_t tcp_conn_info;
 
     int do_passivedpi = 0, do_block_quic = 0,
@@ -954,6 +1021,34 @@ int main(int argc, char *argv[]) {
                 }
                 dnsv6_port = htons(dnsv6_port);
                 break;
+            case 'B': // --dns-backup
+                if (!do_dnsv4_redirect) {
+                    puts("--dns-backup should be used with --dns-addr!\n"
+                        "Make sure you use --dns-addr and pass it before "
+                        "--dns-backup");
+                    exit(ERROR_DNS_V4_ADDR);
+                }
+                if (!parse_dns_server(optarg, 0, &dnsv4_backup, dns_backup_text, sizeof(dns_backup_text))) {
+                    puts("DNS backup parameter error! Use ADDRESS or ADDRESS:PORT.");
+                    exit(ERROR_DNS_V4_ADDR);
+                }
+                have_dnsv4_backup = 1;
+                add_dns_reply_filter(0, dns_backup_text, ntohs(dnsv4_backup.port));
+                break;
+            case 'C': // --dnsv6-backup
+                if (!do_dnsv6_redirect) {
+                    puts("--dnsv6-backup should be used with --dnsv6-addr!\n"
+                        "Make sure you use --dnsv6-addr and pass it before "
+                        "--dnsv6-backup");
+                    exit(ERROR_DNS_V6_ADDR);
+                }
+                if (!parse_dns_server(optarg, 1, &dnsv6_backup, dns_backup_text, sizeof(dns_backup_text))) {
+                    puts("DNS backup parameter error! Use ADDRESS or [ADDRESS]:PORT.");
+                    exit(ERROR_DNS_V6_ADDR);
+                }
+                have_dnsv6_backup = 1;
+                add_dns_reply_filter(1, dns_backup_text, ntohs(dnsv6_backup.port));
+                break;
             case 'v':
                 do_dns_verb = 1;
                 do_tcp_verb = 1;
@@ -1099,6 +1194,9 @@ int main(int argc, char *argv[]) {
                 " --dns-port    <value>    redirect UDPv4 DNS requests to the supplied port (53 by default)\n"
                 " --dnsv6-addr  <value>    redirect UDPv6 DNS requests to the supplied IPv6 address (experimental)\n"
                 " --dnsv6-port  <value>    redirect UDPv6 DNS requests to the supplied port (53 by default)\n"
+                " --dns-backup  <addr[:port]>  a second DNS server (after --dns-addr): used when the first one\n"
+                "                          does not answer, and for a minute after that. --dnsv6-backup is the same\n"
+                "                          for IPv6, written [addr]:port.\n"
                 " --dns-verb               print verbose DNS redirection messages\n"
                 " --dns-check   <domain>   compare the system DNS answer for the domain with a plain DNS server\n"
                 "                          (9.9.9.10 port 9953, or --dns-addr and --dns-port) and with DNS over HTTPS\n"
@@ -1187,6 +1285,17 @@ int main(int argc, char *argv[]) {
     if (dns_check_domain)
         return dns_check(dns_check_domain, do_dnsv4_redirect ? dnsv4_addr : 0,
                          do_dnsv4_redirect ? dnsv4_port : 0);
+
+    if (do_dnsv4_redirect) {
+        dns_server_t first = {{dnsv4_addr, 0, 0, 0}, dnsv4_port};
+        dns_set_servers(0, &first, have_dnsv4_backup ? &dnsv4_backup : NULL);
+    }
+    if (do_dnsv6_redirect) {
+        dns_server_t first;
+        memcpy(first.ip, dnsv6_addr.s6_addr, sizeof(first.ip));
+        first.port = dnsv6_port;
+        dns_set_servers(1, &first, have_dnsv6_backup ? &dnsv6_backup : NULL);
+    }
 
     if (do_fake_quic) {
         /* The fake goes with the real Initial, so QUIC must not be blocked as well. */
@@ -1699,11 +1808,13 @@ int main(int argc, char *argv[]) {
                 if (!addr.Outbound) {
                     if ((packet_v4 && dns_handle_incoming(&ppIpHdr->DstAddr, ppUdpHdr->DstPort,
                                         packet_data, packet_dataLen,
-                                        &dns_conn_info, 0))
+                                        &dns_conn_info, 0,
+                                        &ppIpHdr->SrcAddr, ppUdpHdr->SrcPort))
                         ||
                         (packet_v6 && dns_handle_incoming(ppIpV6Hdr->DstAddr, ppUdpHdr->DstPort,
                                         packet_data, packet_dataLen,
-                                        &dns_conn_info, 1)))
+                                        &dns_conn_info, 1,
+                                        ppIpV6Hdr->SrcAddr, ppUdpHdr->SrcPort)))
                     {
                         /* Changing source IP and port to the values
                          * from DNS conntrack */
@@ -1729,21 +1840,21 @@ int main(int argc, char *argv[]) {
                 else if (addr.Outbound) {
                     if ((packet_v4 && dns_handle_outgoing(&ppIpHdr->SrcAddr, ppUdpHdr->SrcPort,
                                         &ppIpHdr->DstAddr, ppUdpHdr->DstPort,
-                                        packet_data, packet_dataLen, 0))
+                                        packet_data, packet_dataLen, 0, &dns_target))
                         ||
                         (packet_v6 && dns_handle_outgoing(ppIpV6Hdr->SrcAddr, ppUdpHdr->SrcPort,
                                         ppIpV6Hdr->DstAddr, ppUdpHdr->DstPort,
-                                        packet_data, packet_dataLen, 1)))
+                                        packet_data, packet_dataLen, 1, &dns_target)))
                     {
-                        /* Changing destination IP and port to the values
-                         * from configuration */
+                        /* Changing destination IP and port to the server
+                         * chosen from the configuration */
                         if (packet_v4) {
-                            ppIpHdr->DstAddr = dnsv4_addr;
-                            ppUdpHdr->DstPort = dnsv4_port;
+                            ppIpHdr->DstAddr = dns_target.ip[0];
+                            ppUdpHdr->DstPort = dns_target.port;
                         }
                         else if (packet_v6) {
-                            ipv6_copy_addr(ppIpV6Hdr->DstAddr, (uint32_t*)dnsv6_addr.s6_addr);
-                            ppUdpHdr->DstPort = dnsv6_port;
+                            ipv6_copy_addr(ppIpV6Hdr->DstAddr, dns_target.ip);
+                            ppUdpHdr->DstPort = dns_target.port;
                         }
                         should_recalc_checksum = 1;
                     }
