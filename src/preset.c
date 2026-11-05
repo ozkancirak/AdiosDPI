@@ -14,11 +14,14 @@
  * On the one Turkish line it was measured on it answers in about 11 ms (IPv4), where the Yandex
  * server the first presets used (77.88.8.8 port 1253) took about 90 ms, paid on every name that
  * is not cached yet. Any resolver can still be chosen with --dns-addr and --dns-port.
+ * If it does not answer, the queries go to OpenDNS on port 5353 (a different provider, about 16 ms
+ * away) until Quad9 is tried again.
  */
 #define DNS_OPTIONS "--dns-addr", "9.9.9.10", "--dns-port", "9953", \
-                    "--dnsv6-addr", "2620:fe::10", "--dnsv6-port", "9953"
+                    "--dnsv6-addr", "2620:fe::10", "--dnsv6-port", "9953", \
+                    "--dns-backup", "208.67.222.222:5353", "--dnsv6-backup", "[2620:119:35::35]:5353"
 
-#define MAX_PRESET_OPTIONS 12
+#define MAX_PRESET_OPTIONS 16
 
 static const struct {
     const char *name;
