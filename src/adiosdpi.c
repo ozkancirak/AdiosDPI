@@ -657,16 +657,22 @@ static void send_native_fragment(HANDLE w_filter, WINDIVERT_ADDRESS addr,
 }
 
 /*
- * Looking through every running program takes about half a second, so it runs beside the start-up
- * instead of in front of it: the filter opens at once and the warning, if any, follows.
+ * What is left to do once the filter is open. Looking through every running program takes about half
+ * a second, so it runs beside the start-up instead of in front of it: the filter opens at once and the
+ * warning, if any, follows.
+ *
+ * Then the working set is emptied. Start-up touched the pages of every library it loaded, about 5 MB,
+ * nearly all of it shared with other programs; the loop needs a small part of that, and those pages
+ * come back as it uses them (the first connection afterwards takes a few milliseconds longer).
  */
-static DWORD WINAPI warn_about_other_tools(LPVOID unused) {
+static DWORD WINAPI finish_startup(LPVOID unused) {
     char others[512];
 
     (void)unused;
     if (windivert_users(others, sizeof(others), 0))
         printf("\nWARNING: WinDivert is loaded by %s. Two bypass tools at once can break connections;\n"
                "close the other one first if sites stop opening.\n", others);
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     return 0;
 }
 
@@ -1403,7 +1409,7 @@ int main(int argc, char *argv[]) {
         finalize_filter_strings(&features);
     }
     {
-        HANDLE scan = CreateThread(NULL, 0, warn_about_other_tools, NULL, 0, NULL);
+        HANDLE scan = CreateThread(NULL, 0, finish_startup, NULL, 0, NULL);
         if (scan)
             CloseHandle(scan);
     }
