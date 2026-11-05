@@ -289,6 +289,10 @@ int service_install(int argc, char *argv[])
 {
     char path[MAX_PATH], dir[MAX_PATH], installed[MAX_PATH], cmd[4096], full[4096 + MAX_PATH];
     SERVICE_DESCRIPTION description = {"DPI circumvention (AdiosDPI)"};
+    /* After a crash Windows starts the service again: after 5 s, then 15 s, then 60 s each time.
+     * The count starts over after a day. A normal stop, even one with an error code, is not a crash. */
+    SC_ACTION again[3] = {{SC_ACTION_RESTART, 5000}, {SC_ACTION_RESTART, 15000}, {SC_ACTION_RESTART, 60000}};
+    SERVICE_FAILURE_ACTIONS failure = {86400, NULL, NULL, 3, again};
     SC_HANDLE scm, svc;
     DWORD err;
     int i;
@@ -342,6 +346,7 @@ int service_install(int argc, char *argv[])
         return 1;
     }
     ChangeServiceConfig2(svc, SERVICE_CONFIG_DESCRIPTION, &description);
+    ChangeServiceConfig2(svc, SERVICE_CONFIG_FAILURE_ACTIONS, &failure);
     if (StartService(svc, 0, NULL))
         puts("The AdiosDPI service is installed and running. It starts with Windows.");
     else
