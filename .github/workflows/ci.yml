@@ -58,9 +58,18 @@ jobs:
           cd src && make CPREFIX=x86_64-w64-mingw32- CC="x86_64-w64-mingw32-gcc-posix $WERROR" BIT64=1
           WINDIVERTHEADERS=../$WINDIVERT_BASENAME/include
           WINDIVERTLIBS=../$WINDIVERT_BASENAME/x64 -j4
+          && mkdir -p ../out && cp adiosdpi.exe ../out/adiosdpi-x86_64.exe
 
       - name: Build i686
         run: >
           cd src && make clean && make CPREFIX=i686-w64-mingw32- CC="i686-w64-mingw32-gcc-posix $WERROR"
           WINDIVERTHEADERS=../$WINDIVERT_BASENAME/include
           WINDIVERTLIBS=../$WINDIVERT_BASENAME/x86 -j4
+          && cp adiosdpi.exe ../out/adiosdpi-x86.exe
+
+      # The executables as built here, to try them or to measure them without building again.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: adiosdpi-exe
+          path: out/
+          retention-days: 14
