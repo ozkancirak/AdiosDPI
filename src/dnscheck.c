@@ -251,13 +251,68 @@ static void print_fix(int plain_answered, const unsigned char *sb, uint16_t port
              "Secure DNS (DNS over HTTPS) in Windows or in the browser instead.");
 }
 
+enum { AGREE, DIFFER, BLOCKED, EMPTY, NO_ANSWER };
+
+/* What the three sets of answers say about the system resolver. */
+static int judge(const uint32_t *sys, int ns, const uint32_t *plain, int np, const uint32_t *doh, int nd) {
+    int i, j, k, blocked = 0, common = 0;
+
+    for (i = 0; i < ns; i++) {
+        for (k = 0; k < (int)(sizeof(block_pages) / sizeof(*block_pages)); k++)
+            if (memcmp(&sys[i], block_pages[k], 4) == 0)
+                blocked = 1;
+        for (j = 0; j < np; j++)
+            if (sys[i] == plain[j])
+                common = 1;
+        for (j = 0; j < nd; j++)
+            if (sys[i] == doh[j])
+                common = 1;
+    }
+    if (!np && !nd)
+        return NO_ANSWER;
+    if (blocked)
+        return BLOCKED;
+    if (!ns)
+        return EMPTY;
+    return common ? AGREE : DIFFER;
+}
+
+int dns_verdict(const char *domain, uint32_t *addr) {
+    WSADATA wsa;
+    uint32_t sys[MAX_ADDRS], plain[MAX_ADDRS], doh[MAX_ADDRS], server;
+    int ns, np, nd, verdict, result;
+
+    *addr = 0;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+        return DNS_UNKNOWN;
+    memcpy(&server, default_server, 4);
+    ns = system_lookup(domain, sys);
+    np = plain_lookup(domain, server, htons(DEFAULT_PORT), plain);
+    nd = doh_lookup(domain, doh);
+    verdict = judge(sys, ns, plain, np, doh, nd);
+    if (verdict == BLOCKED || verdict == EMPTY) {
+        result = DNS_POISONED;
+        *addr = np ? plain[0] : doh[0];     /* BLOCKED and EMPTY mean that at least one of them answered */
+    }
+    else if (verdict == NO_ANSWER) {
+        result = DNS_UNKNOWN;
+        *addr = ns ? sys[0] : 0;
+    }
+    else {
+        result = verdict == AGREE ? DNS_OK : DNS_UNSURE;
+        *addr = sys[0];
+    }
+    WSACleanup();
+    return result;
+}
+
 int dns_check(const char *domain, uint32_t server, uint16_t port) {
     WSADATA wsa;
     uint32_t sys[MAX_ADDRS], plain[MAX_ADDRS], doh[MAX_ADDRS];
     const unsigned char *sb;
     char label[24];
     double t0, t1, t2, t3;
-    int ns, np, nd, i, j, k, blocked = 0, common = 0, result;
+    int ns, np, nd, result;
 
     if (!server) {
         memcpy(&server, default_server, 4);
@@ -284,41 +339,31 @@ int dns_check(const char *domain, uint32_t server, uint16_t port) {
     printf("  %-21s: ", DOH_LABEL);
     print_addrs(doh, nd, t3 - t2);
 
-    for (i = 0; i < ns; i++) {
-        for (k = 0; k < (int)(sizeof(block_pages) / sizeof(*block_pages)); k++)
-            if (memcmp(&sys[i], block_pages[k], 4) == 0)
-                blocked = 1;
-        for (j = 0; j < np; j++)
-            if (sys[i] == plain[j])
-                common = 1;
-        for (j = 0; j < nd; j++)
-            if (sys[i] == doh[j])
-                common = 1;
-    }
-
-    if (!np && !nd) {
+    switch (judge(sys, ns, plain, np, doh, nd)) {
+    case NO_ANSWER:
         puts("No answer from the DNS server or from DoH, so the answers can't be compared.\n"
              "Try another DNS server with --dns-addr and --dns-port.");
         result = 2;
-    }
-    else if (blocked) {
+        break;
+    case BLOCKED:
         puts("POISONED: the system resolver answers with the address of an ISP block page.");
         print_fix(np > 0, sb, port);
         result = 1;
-    }
-    else if (!ns) {
+        break;
+    case EMPTY:
         puts("SUSPICIOUS: the system resolver returned nothing but the others did.");
         print_fix(np > 0, sb, port);
         result = 1;
-    }
-    else if (common) {
+        break;
+    case AGREE:
         puts("OK: the system resolver agrees with the others.");
         result = 0;
-    }
-    else {
+        break;
+    default:
         puts("No block page found. The answers differ, which a CDN can cause (each resolver\n"
              "gets other addresses); if the site still does not open, DNS may be the cause.");
         result = 0;
+        break;
     }
     WSACleanup();
     return result;

@@ -14,4 +14,12 @@
  */
 int dns_check(const char *domain, uint32_t server, uint16_t port);
 
+/*
+ * The same comparison without any output, for --probe. The server is the one the
+ * presets use. addr gets the address to connect to: the real one when the system
+ * resolver is poisoned, otherwise what the system resolver gave (0 if nothing).
+ */
+enum { DNS_OK, DNS_POISONED, DNS_UNKNOWN, DNS_UNSURE };
+int dns_verdict(const char *domain, uint32_t *addr);
+
 #endif
