@@ -554,10 +554,43 @@ static int find_header_and_get_info(const char *pktdata, unsigned int pktlen,
     return FALSE;
 }
 
-static inline void change_window_size(const PWINDIVERT_TCPHDR ppTcpHdr, unsigned int size) {
-    if (size >= 1 && size <= 0xFFFFu) {
-        ppTcpHdr->Window = htons((u_short)size);
-    }
+/* RFC 1624: the checksum after a 16-bit field changes from old_val to new_val. */
+static inline uint16_t checksum_update16(uint16_t checksum, uint16_t old_val, uint16_t new_val) {
+    uint32_t sum = (uint32_t)(uint16_t)~checksum + (uint32_t)(uint16_t)~old_val + (uint32_t)new_val;
+
+    sum = (sum & 0xFFFFu) + (sum >> 16);
+    sum = (sum & 0xFFFFu) + (sum >> 16);
+    return (uint16_t)~sum;
+}
+
+static inline uint16_t checksum_update32(uint16_t checksum, uint32_t old_val, uint32_t new_val) {
+    uint16_t sum = checksum_update16(checksum, (uint16_t)(old_val & 0xFFFFu),
+                                     (uint16_t)(new_val & 0xFFFFu));
+    return checksum_update16(sum, (uint16_t)(old_val >> 16), (uint16_t)(new_val >> 16));
+}
+
+/* A zero checksum means "not computed" for UDP over IPv4; the wire form is 0xFFFF. */
+static inline uint16_t udp_checksum_fix_zero(uint16_t checksum) {
+    return checksum == 0 ? 0xFFFFu : checksum;
+}
+
+/*
+ * Returns 1 when the caller need not recalculate the checksums: either nothing
+ * changed or the TCP checksum was updated in place. Returns 0 when it was not.
+ */
+static inline int change_window_size(PWINDIVERT_TCPHDR ppTcpHdr, unsigned int size, int checksum_ok) {
+    uint16_t old_window, window;
+
+    if (size < 1 || size > 0xFFFFu)
+        return 1;
+    window = htons((u_short)size);
+    old_window = ppTcpHdr->Window;
+    if (old_window == window)
+        return 1;
+    if (checksum_ok)
+        ppTcpHdr->Checksum = checksum_update16(ppTcpHdr->Checksum, old_window, window);
+    ppTcpHdr->Window = window;
+    return checksum_ok;
 }
 
 /* HTTP method end without trailing space */
@@ -1876,12 +1909,12 @@ int main(int argc, char *argv[]) {
 
                     if (!do_native_frag) {
                         if (do_fragment_http && ppTcpHdr->SrcPort == htons(80)) {
-                            change_window_size(ppTcpHdr, http_fragment_size);
-                            should_recalc_checksum = 1;
+                            if (!change_window_size(ppTcpHdr, http_fragment_size, addr.TCPChecksum))
+                                should_recalc_checksum = 1;
                         }
                         else if (do_fragment_https && ppTcpHdr->SrcPort != htons(80)) {
-                            change_window_size(ppTcpHdr, https_fragment_size);
-                            should_recalc_checksum = 1;
+                            if (!change_window_size(ppTcpHdr, https_fragment_size, addr.TCPChecksum))
+                                should_recalc_checksum = 1;
                         }
                     }
                 }
@@ -1923,13 +1956,51 @@ int main(int argc, char *argv[]) {
                     {
                         /* Changing source IP and port to the values
                          * from DNS conntrack */
-                        if (packet_v4)
+                        if (packet_v4) {
+                            uint32_t old_addr = ppIpHdr->SrcAddr;
+                            uint16_t old_sport = ppUdpHdr->SrcPort;
+                            uint16_t old_dport = ppUdpHdr->DstPort;
+                            int fix = addr.IPChecksum && (ppUdpHdr->Checksum == 0 || addr.UDPChecksum);
+
                             ppIpHdr->SrcAddr = dns_conn_info.dstip[0];
-                        else if (packet_v6)
+                            ppUdpHdr->DstPort = dns_conn_info.srcport;
+                            ppUdpHdr->SrcPort = dns_conn_info.dstport;
+                            if (fix) {
+                                ppIpHdr->Checksum = checksum_update32(ppIpHdr->Checksum,
+                                                                      old_addr, ppIpHdr->SrcAddr);
+                                if (ppUdpHdr->Checksum) {
+                                    uint16_t sum = checksum_update32(ppUdpHdr->Checksum,
+                                                                     old_addr, ppIpHdr->SrcAddr);
+                                    sum = checksum_update16(sum, old_sport, ppUdpHdr->SrcPort);
+                                    sum = checksum_update16(sum, old_dport, ppUdpHdr->DstPort);
+                                    ppUdpHdr->Checksum = udp_checksum_fix_zero(sum);
+                                }
+                            }
+                            else
+                                should_recalc_checksum = 1;
+                        }
+                        else if (packet_v6) {
+                            uint32_t old_addr[4];
+                            uint16_t old_sport = ppUdpHdr->SrcPort;
+                            uint16_t old_dport = ppUdpHdr->DstPort;
+                            int word;
+
+                            memcpy(old_addr, ppIpV6Hdr->SrcAddr, sizeof(old_addr));
                             ipv6_copy_addr(ppIpV6Hdr->SrcAddr, dns_conn_info.dstip);
-                        ppUdpHdr->DstPort = dns_conn_info.srcport;
-                        ppUdpHdr->SrcPort = dns_conn_info.dstport;
-                        should_recalc_checksum = 1;
+                            ppUdpHdr->DstPort = dns_conn_info.srcport;
+                            ppUdpHdr->SrcPort = dns_conn_info.dstport;
+                            if (addr.UDPChecksum && ppUdpHdr->Checksum) {
+                                uint16_t sum = ppUdpHdr->Checksum;
+
+                                for (word = 0; word < 4; word++)
+                                    sum = checksum_update32(sum, old_addr[word], ppIpV6Hdr->SrcAddr[word]);
+                                sum = checksum_update16(sum, old_sport, ppUdpHdr->SrcPort);
+                                sum = checksum_update16(sum, old_dport, ppUdpHdr->DstPort);
+                                ppUdpHdr->Checksum = udp_checksum_fix_zero(sum);
+                            }
+                            else
+                                should_recalc_checksum = 1;
+                        }
                     }
                     else {
                         if (dns_is_dns_packet(packet_data, packet_dataLen, 0))
@@ -1954,14 +2025,44 @@ int main(int argc, char *argv[]) {
                         /* Changing destination IP and port to the server
                          * chosen from the configuration */
                         if (packet_v4) {
+                            uint32_t old_addr = ppIpHdr->DstAddr;
+                            uint16_t old_dport = ppUdpHdr->DstPort;
+                            int fix = addr.IPChecksum && (ppUdpHdr->Checksum == 0 || addr.UDPChecksum);
+
                             ppIpHdr->DstAddr = dns_target.ip[0];
                             ppUdpHdr->DstPort = dns_target.port;
+                            if (fix) {
+                                ppIpHdr->Checksum = checksum_update32(ppIpHdr->Checksum,
+                                                                      old_addr, ppIpHdr->DstAddr);
+                                if (ppUdpHdr->Checksum) {
+                                    uint16_t sum = checksum_update32(ppUdpHdr->Checksum,
+                                                                     old_addr, ppIpHdr->DstAddr);
+                                    sum = checksum_update16(sum, old_dport, ppUdpHdr->DstPort);
+                                    ppUdpHdr->Checksum = udp_checksum_fix_zero(sum);
+                                }
+                            }
+                            else
+                                should_recalc_checksum = 1;
                         }
                         else if (packet_v6) {
+                            uint32_t old_addr[4];
+                            uint16_t old_dport = ppUdpHdr->DstPort;
+                            int word;
+
+                            memcpy(old_addr, ppIpV6Hdr->DstAddr, sizeof(old_addr));
                             ipv6_copy_addr(ppIpV6Hdr->DstAddr, dns_target.ip);
                             ppUdpHdr->DstPort = dns_target.port;
+                            if (addr.UDPChecksum && ppUdpHdr->Checksum) {
+                                uint16_t sum = ppUdpHdr->Checksum;
+
+                                for (word = 0; word < 4; word++)
+                                    sum = checksum_update32(sum, old_addr[word], ppIpV6Hdr->DstAddr[word]);
+                                sum = checksum_update16(sum, old_dport, ppUdpHdr->DstPort);
+                                ppUdpHdr->Checksum = udp_checksum_fix_zero(sum);
+                            }
+                            else
+                                should_recalc_checksum = 1;
                         }
-                        should_recalc_checksum = 1;
                     }
                     else {
                         if (dns_is_dns_packet(packet_data, packet_dataLen, 1))
