@@ -18,21 +18,19 @@
 #include <string.h>
 #include "adiosdpi.h"
 #include "dnsredir.h"
-#include "utils/uthash.h"
 
 /* key ('4' for IPv4 or '6' for IPv6 + srcip[16] + srcport[2]) */
 #define UDP_CONNRECORD_KEY_LEN 19
 
 #define DNS_CLEANUP_INTERVAL_SEC 30
 
-/* HACK!
- * uthash uses strlen() for HASH_FIND_STR.
- * We have null bytes in our key, so we can't use strlen()
- * And since it's always UDP_CONNRECORD_KEY_LEN bytes long,
- * we don't need to use any string function to determine length.
+/*
+ * A fixed open-addressing table: the packet path never allocates and a lookup
+ * touches one line of memory. It is far bigger than the number of queries that
+ * are waiting for their answer at any time.
  */
-#undef uthash_strlen
-#define uthash_strlen(s) UDP_CONNRECORD_KEY_LEN
+#define DNS_TABLE_SLOTS 1024
+#define DNS_TABLE_PROBES 16
 
 typedef struct udp_connrecord {
     /* key ('4' for IPv4 or '6' for IPv6 + srcip[16] + srcport[2]) */
@@ -43,11 +41,11 @@ typedef struct udp_connrecord {
     ULONGLONG sent;      /* GetTickCount64() when the query was last sent */
     uint16_t id;         /* DNS transaction id, as in the packet */
     uint8_t server;      /* which server it went to: 0 the first, 1 the backup */
-    UT_hash_handle hh;   /* makes this structure hashable */
+    uint8_t used;
 } udp_connrecord_t;
 
 static time_t last_cleanup = 0;
-static udp_connrecord_t *conntrack = NULL;
+static udp_connrecord_t conntrack[DNS_TABLE_SLOTS];
 
 /* A server that did not answer is left alone for this long, then it is tried again. */
 #define DNS_AVOID_MS 60000
@@ -169,14 +167,70 @@ inline static void deconstruct_key(const char *key, const udp_connrecord_t *conn
     debug("Deconstruct key end\n");
 }
 
-static int check_get_udp_conntrack_key(const char *key, udp_connrecord_t **connrecord) {
-    udp_connrecord_t *tmp_connrecord = NULL;
-    if (!conntrack) return FALSE;
+static unsigned int table_hash(const char *key) {
+    uint32_t h = 2166136261u;
+    unsigned int i;
 
-    HASH_FIND_STR(conntrack, key, tmp_connrecord);
-    if (tmp_connrecord) {
+    for (i = 0; i < UDP_CONNRECORD_KEY_LEN; i++)
+        h = (h ^ (uint8_t)key[i]) * 16777619u;
+    return h % DNS_TABLE_SLOTS;
+}
+
+static udp_connrecord_t *find_record(const char *key) {
+    unsigned int home = table_hash(key), i;
+
+    for (i = 0; i < DNS_TABLE_PROBES; i++) {
+        udp_connrecord_t *rec = &conntrack[(home + i) % DNS_TABLE_SLOTS];
+
+        if (!rec->used)
+            return NULL;
+        if (memcmp(rec->key, key, UDP_CONNRECORD_KEY_LEN) == 0)
+            return rec;
+    }
+    return NULL;
+}
+
+static udp_connrecord_t *insert_record(const char *key) {
+    unsigned int home = table_hash(key), i;
+
+    for (i = 0; i < DNS_TABLE_PROBES; i++) {
+        udp_connrecord_t *rec = &conntrack[(home + i) % DNS_TABLE_SLOTS];
+
+        if (!rec->used) {
+            memset(rec, 0, sizeof(*rec));
+            memcpy(rec->key, key, UDP_CONNRECORD_KEY_LEN);
+            rec->used = 1;
+            return rec;
+        }
+    }
+    return NULL;
+}
+
+/* Linear probing: after a removal the entries behind it move back, so lookups still stop at an empty slot. */
+static void remove_record(udp_connrecord_t *rec) {
+    unsigned int i = (unsigned int)(rec - conntrack), j = i;
+
+    for (;;) {
+        unsigned int home;
+
+        j = (j + 1) % DNS_TABLE_SLOTS;
+        if (!conntrack[j].used)
+            break;
+        home = table_hash(conntrack[j].key);
+        if (i < j ? (home <= i || home > j) : (home <= i && home > j)) {
+            conntrack[i] = conntrack[j];
+            i = j;
+        }
+    }
+    conntrack[i].used = 0;
+}
+
+static int check_get_udp_conntrack_key(const char *key, udp_connrecord_t **connrecord) {
+    udp_connrecord_t *rec = find_record(key);
+
+    if (rec) {
         if (connrecord)
-            *connrecord = tmp_connrecord;
+            *connrecord = rec;
         debug("check_get_udp_conntrack_key found key\n");
         return TRUE;
     }
@@ -190,55 +244,53 @@ static int add_udp_conntrack(const uint32_t srcip[4], const uint16_t srcport,
                              const ULONGLONG now, udp_connrecord_t **added
                             )
 {
+    char key[UDP_CONNRECORD_KEY_LEN];
+    udp_connrecord_t *rec;
+
     if (!(srcip && srcport && dstip && dstport))
         return FALSE;
 
-    udp_connrecord_t *tmp_connrecord = malloc(sizeof(udp_connrecord_t));
-    if (!tmp_connrecord)
+    construct_key(srcip, srcport, key, is_ipv6);
+    if (check_get_udp_conntrack_key(key, NULL)) {
+        debug("Not added UDP conntrack\n");
         return FALSE;
-    construct_key(srcip, srcport, tmp_connrecord->key, is_ipv6);
-
-    if (!check_get_udp_conntrack_key(tmp_connrecord->key, NULL)) {
-        tmp_connrecord->time = time(NULL);
-
-        if (is_ipv6) {
-            ipv6_copy_addr(tmp_connrecord->dstip, dstip);
-        }
-        else {
-            ipv4_copy_addr(tmp_connrecord->dstip, dstip);
-        }
-        tmp_connrecord->dstport = dstport;
-        tmp_connrecord->sent = now;
-        tmp_connrecord->id = id;
-        tmp_connrecord->server = (uint8_t)server;
-        HASH_ADD_STR(conntrack, key, tmp_connrecord);
-        *added = tmp_connrecord;
-        debug("Added UDP conntrack\n");
-        return TRUE;
     }
-    debug("Not added UDP conntrack\n");
-    free(tmp_connrecord);
-    return FALSE;
+    rec = insert_record(key);
+    if (!rec)
+        return FALSE;
+    rec->time = time(NULL);
+    if (is_ipv6) {
+        ipv6_copy_addr(rec->dstip, dstip);
+    }
+    else {
+        ipv4_copy_addr(rec->dstip, dstip);
+    }
+    rec->dstport = dstport;
+    rec->sent = now;
+    rec->id = id;
+    rec->server = (uint8_t)server;
+    *added = rec;
+    debug("Added UDP conntrack\n");
+    return TRUE;
 }
 
 static void dns_cleanup() {
-    udp_connrecord_t *tmp_connrecord, *tmp_connrecord2 = NULL;
+    time_t now;
+    unsigned int i;
 
     if (last_cleanup == 0) {
         last_cleanup = time(NULL);
         return;
     }
 
-    if (difftime(time(NULL), last_cleanup) >= DNS_CLEANUP_INTERVAL_SEC) {
-        last_cleanup = time(NULL);
+    now = time(NULL);
+    if (difftime(now, last_cleanup) < DNS_CLEANUP_INTERVAL_SEC)
+        return;
+    last_cleanup = now;
 
-        HASH_ITER(hh, conntrack, tmp_connrecord, tmp_connrecord2) {
-            if (difftime(last_cleanup, tmp_connrecord->time) >= DNS_CLEANUP_INTERVAL_SEC) {
-                HASH_DEL(conntrack, tmp_connrecord);
-                free(tmp_connrecord);
-            }
-        }
-    }
+    for (i = 0; i < DNS_TABLE_SLOTS; i++)
+        if (conntrack[i].used && difftime(now, conntrack[i].time) >= DNS_CLEANUP_INTERVAL_SEC)
+            remove_record(&conntrack[i]);
 }
 
 int dns_is_dns_packet(const char *packet_data, const UINT packet_dataLen, const int outgoing) {
@@ -313,7 +365,7 @@ int dns_handle_incoming(const uint32_t *srcip, const uint16_t srcport,
                         const uint32_t *from_ip, const uint16_t from_port)
 {
     char key[UDP_CONNRECORD_KEY_LEN];
-    udp_connrecord_t *tmp_connrecord = NULL;
+    udp_connrecord_t *record = NULL;
     int f = is_ipv6 ? 1 : 0, s;
 
     if (packet_dataLen < 16 || !conn_info)
@@ -324,7 +376,7 @@ int dns_handle_incoming(const uint32_t *srcip, const uint16_t srcport,
     if (dns_is_dns_packet(packet_data, packet_dataLen, 0)) {
         /* Looks like DNS response */
         construct_key(srcip, srcport, key, is_ipv6);
-        if (check_get_udp_conntrack_key(key, &tmp_connrecord) && tmp_connrecord) {
+        if (check_get_udp_conntrack_key(key, &record) && record) {
             /* Connection exists in conntrack, moving on. The server the answer came from is alive: it is
              * judged by the address on the answer, not by where the query was last sent. */
             for (s = 0; s < servers[f].count; s++)
@@ -333,9 +385,8 @@ int dns_handle_incoming(const uint32_t *srcip, const uint16_t srcport,
                     servers[f].failed[s] = 0;
                     servers[f].alive[s] = GetTickCount64();
                 }
-            deconstruct_key(key, tmp_connrecord, conn_info);
-            HASH_DEL(conntrack, tmp_connrecord);
-            free(tmp_connrecord);
+            deconstruct_key(key, record, conn_info);
+            remove_record(record);
             return TRUE;
         }
     }
