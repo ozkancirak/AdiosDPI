@@ -706,6 +706,32 @@ static int open_log(const char *name) {
     return 1;
 }
 
+#define BATCH_SIZE 64
+/* Room for 64 normal packets, and still enough for any single packet the driver can hand over. */
+#define BATCH_BUF_SIZE (BATCH_SIZE * 2048)
+
+static char batch[BATCH_BUF_SIZE];
+static WINDIVERT_ADDRESS batch_addrs[BATCH_SIZE];
+
+/* Length of the first packet in a batch: the packets are packed without gaps. */
+static UINT batch_packet_len(const char *packet, UINT len) {
+    uint16_t total;
+
+    if (len >= 20 && ((unsigned char)packet[0] >> 4) == 4) {
+        memcpy(&total, packet + 2, sizeof(total));
+        total = ntohs(total);
+        if (total >= 20 && total <= len)
+            return total;
+    }
+    else if (len >= 40 && ((unsigned char)packet[0] >> 4) == 6) {
+        memcpy(&total, packet + 4, sizeof(total));
+        total = ntohs(total);
+        if ((UINT)total + 40 <= len)
+            return (UINT)total + 40;
+    }
+    return len;
+}
+
 int main(int argc, char *argv[]) {
     static enum packet_type_e {
         unknown,
@@ -719,7 +745,8 @@ int main(int argc, char *argv[]) {
     int packet_v4, packet_v6;
     HANDLE w_filter = NULL;
     WINDIVERT_ADDRESS addr;
-    char packet[MAX_PACKET_SIZE];
+    char packet_buf[MAX_PACKET_SIZE];
+    char *packet = packet_buf;
     PVOID packet_data;
     UINT packetLen;
     UINT packet_dataLen;
@@ -1458,11 +1485,53 @@ int main(int argc, char *argv[]) {
     struct reasm_result reasm;
 
     while (1) {
+        UINT addr_len = 0, batch_len = 0, batch_rem = 0;
+        char *batch_pkt = NULL;
+        int batch_count = 0, batch_idx = 0, have_packet = 0;
+
         memset(&reasm, 0, sizeof(reasm));
-        if (reasm_next(packet, sizeof(packet), &packetLen, &addr, &reasm) ||
-            WinDivertRecv(w_filter, packet, sizeof(packet), &packetLen, &addr)) {
+        if (reasm_next(packet_buf, sizeof(packet_buf), &packetLen, &addr, &reasm)) {
+            recv_failures = 0;
+            have_packet = 1;
+        }
+        else {
+            addr_len = sizeof(batch_addrs);
+            if (!WinDivertRecvEx(w_filter, batch, sizeof(batch), &batch_len, 0,
+                                 batch_addrs, &addr_len, NULL)) {
+                DWORD err = GetLastError();
+                /* The handle was shut down: this is the normal way out. */
+                if (exiting || err == ERROR_NO_DATA || err == ERROR_INVALID_HANDLE)
+                    break;
+                /* Anything else costs one packet at most, and TCP resends it. */
+                if (++recv_failures > 100) {
+                    printf("Too many receive errors (last error %lu), giving up.\n", err);
+                    break;
+                }
+                if (recv_failures == 1)
+                    printf("Error receiving a packet (error %lu), continuing.\n", err);
+                continue;
+            }
             recv_failures = 0;
             reasm_expire(w_filter);
+            batch_count = (int)(addr_len / sizeof(WINDIVERT_ADDRESS));
+            batch_pkt = batch;
+            batch_rem = batch_len;
+        }
+
+        for (;;) {
+            /* A joined ClientHello goes out in order, before the rest of the batch. */
+            if (!have_packet &&
+                !reasm_next(packet_buf, sizeof(packet_buf), &packetLen, &addr, &reasm)) {
+                if (batch_idx >= batch_count || batch_rem == 0)
+                    break;
+                packetLen = batch_packet_len(batch_pkt, batch_rem);
+                packet = batch_pkt;
+                addr = batch_addrs[batch_idx++];
+                batch_pkt += packetLen;
+                batch_rem -= packetLen;
+            }
+            have_packet = 0;
+
             debug("Got %s packet, len=%d!\n", addr.Outbound ? "outbound" : "inbound",
                    packetLen);
             should_reinject = 1;
@@ -1883,19 +1952,6 @@ int main(int argc, char *argv[]) {
                 }
                 WinDivertSend(w_filter, packet, packetLen, NULL, &addr);
             }
-        }
-        else {
-            DWORD err = GetLastError();
-            /* The handle was shut down: this is the normal way out. */
-            if (exiting || err == ERROR_NO_DATA || err == ERROR_INVALID_HANDLE)
-                break;
-            /* Anything else costs one packet at most, and TCP resends it. */
-            if (++recv_failures > 100) {
-                printf("Too many receive errors (last error %lu), giving up.\n", err);
-                break;
-            }
-            if (recv_failures == 1)
-                printf("Error receiving a packet (error %lu), continuing.\n", err);
         }
     }
     deinit_all();
