@@ -186,8 +186,12 @@ static const char *http_methods[] = {
     "OPTIONS ",
 };
 
+/* Long-only option. */
+#define OPT_CUTOFF 1000
+
 static struct option long_options[] = {
     {"port",        required_argument, 0,  'z' },
+    {"cutoff",      required_argument, 0,  OPT_CUTOFF },
     {"dns-addr",    required_argument, 0,  'd' },
     {"dns-port",    required_argument, 0,  'g' },
     {"dnsv6-addr",  required_argument, 0,  '!' },
@@ -593,6 +597,85 @@ static inline int change_window_size(PWINDIVERT_TCPHDR ppTcpHdr, unsigned int si
     return checksum_ok;
 }
 
+/*
+ * Long-lived connections keep asking for the same trick, but a DPI box has
+ * already made up its mind after the first requests. --cutoff limits the
+ * tricks to the first packets of a connection; the counters are kept in a
+ * fixed table so no memory is allocated in the packet path.
+ */
+#define CUTOFF_SLOTS 1024
+#define CUTOFF_PROBES 8
+#define CUTOFF_IDLE_MS 60000
+
+struct cutoff_entry {
+    uint32_t src[4];
+    uint32_t dst[4];
+    uint16_t sport, dport;
+    uint8_t v6, proto;
+    uint8_t used;
+    unsigned int count;
+    ULONGLONG last;
+};
+
+static struct cutoff_entry cutoff_table[CUTOFF_SLOTS];
+
+static unsigned int cutoff_hash(int v6, int proto, const uint32_t *src,
+                                const uint32_t *dst, uint16_t sport, uint16_t dport) {
+    uint32_t h = 2166136261u;
+    int words = v6 ? 4 : 1;
+    int i;
+
+    h = (h ^ (uint32_t)proto) * 16777619u;
+    for (i = 0; i < words; i++)
+        h = (h ^ src[i]) * 16777619u;
+    for (i = 0; i < words; i++)
+        h = (h ^ dst[i]) * 16777619u;
+    h = (h ^ sport) * 16777619u;
+    h = (h ^ dport) * 16777619u;
+    return h;
+}
+
+/* Counts the packet and says whether the connection may be tricked once more. */
+static int cutoff_allow(int v6, int proto, const uint32_t *src, const uint32_t *dst,
+                        uint16_t sport, uint16_t dport, unsigned int cutoff) {
+    struct cutoff_entry *entry;
+    unsigned int slot, i;
+    size_t addr_size;
+    int words = v6 ? 4 : 1;
+    ULONGLONG now;
+
+    if (!cutoff)
+        return 1;
+    addr_size = (size_t)words * sizeof(*src);
+    slot = cutoff_hash(v6, proto, src, dst, sport, dport) % CUTOFF_SLOTS;
+    now = GetTickCount64();
+    for (i = 0; i < CUTOFF_PROBES; i++) {
+        entry = &cutoff_table[(slot + i) % CUTOFF_SLOTS];
+        if (!entry->used || now - entry->last >= CUTOFF_IDLE_MS)
+            break;
+        if (entry->v6 == v6 && entry->proto == (uint8_t)proto &&
+            entry->sport == sport && entry->dport == dport &&
+            memcmp(entry->src, src, addr_size) == 0 &&
+            memcmp(entry->dst, dst, addr_size) == 0) {
+            entry->last = now;
+            return ++entry->count <= cutoff;
+        }
+    }
+    if (i == CUTOFF_PROBES)
+        entry = &cutoff_table[slot];   /* the table is full: forget the connection that hashed here */
+    memset(entry, 0, sizeof(*entry));
+    entry->used = 1;
+    entry->v6 = (uint8_t)v6;
+    entry->proto = (uint8_t)proto;
+    entry->sport = sport;
+    entry->dport = dport;
+    memcpy(entry->src, src, addr_size);
+    memcpy(entry->dst, dst, addr_size);
+    entry->count = 1;
+    entry->last = now;
+    return 1;
+}
+
 /* HTTP method end without trailing space */
 static PVOID find_http_method_end(const char *pkt, unsigned int http_frag, int *is_fragmented) {
     unsigned int i;
@@ -842,6 +925,7 @@ int main(int argc, char *argv[]) {
     unsigned int http_fragment_size = 0;
     unsigned int https_fragment_size = 0;
     unsigned int current_fragment_size = 0;
+    unsigned int desync_cutoff = 0;
     unsigned short max_payload_size = 0;
     BYTE should_send_fake = 0;
     BYTE ttl_of_fake_packet = 0;
@@ -1267,6 +1351,9 @@ int main(int argc, char *argv[]) {
             case 'x': // --debug-exit
                 debug_exit = true;
                 break;
+            case OPT_CUTOFF: // --cutoff
+                desync_cutoff = atousi(optarg, "Cutoff value should be in range [0 - 0xFFFF]\n");
+                break;
             default:
                 fputs("Usage: adiosdpi.exe [OPTION...]\n"
                 " -p          block passive DPI\n"
@@ -1355,6 +1442,10 @@ int main(int argc, char *argv[]) {
                 "                          (like file transfers) in already established sessions.\n"
                 "                          May skip some huge HTTP requests from being processed.\n"
                 "                          Default (if set): --max-payload 1200.\n"
+                " --cutoff      <value>    apply the circumvention tricks only to the first <value> packets of\n"
+                "                          each connection (HTTP requests, TLS ClientHellos, QUIC Initials).\n"
+                "                          Saves CPU on long-lived connections.\n"
+                "                          Default: 0 (no limit).\n"
                 "\n");
                 puts("LEGACY modesets:\n"
                 " -1          -p -r -s -f 2 -k 2 -n -e 2 (most compatible mode)\n"
@@ -1701,6 +1792,10 @@ int main(int argc, char *argv[]) {
                                 sni_ok = tls_extract_sni(packet_data, packet_dataLen,
                                             &host_addr, &host_len);
                                 if (!sni_ok && do_reasm && tls_hello_incomplete(packet_data, packet_dataLen) &&
+                                    cutoff_allow(packet_v6, 1,
+                                                 packet_v4 ? &ppIpHdr->SrcAddr : ppIpV6Hdr->SrcAddr,
+                                                 packet_v4 ? &ppIpHdr->DstAddr : ppIpV6Hdr->DstAddr,
+                                                 ppTcpHdr->SrcPort, ppTcpHdr->DstPort, desync_cutoff) &&
                                     reasm_hold(packet, packetLen, &addr))
                                     continue;
                             }
@@ -1720,13 +1815,20 @@ int main(int argc, char *argv[]) {
                             memcpy(lsni, host_addr, host_len);
                             printf("Blocked HTTPS website SNI: %s\n", lsni);
 #endif
-                            if (do_fake_packet) {
-                                flush_tx(w_filter);
-                                TCP_HANDLE_OUTGOING_FAKE_PACKET(send_fake_https_request);
-                            }
-                            if (do_native_frag) {
-                                // Signal for native fragmentation code handler
-                                should_recalc_checksum = 1;
+                            /* A ClientHello let through by --reasm was counted when it was held. */
+                            if (reasm.known ||
+                                cutoff_allow(packet_v6, 1,
+                                             packet_v4 ? &ppIpHdr->SrcAddr : ppIpV6Hdr->SrcAddr,
+                                             packet_v4 ? &ppIpHdr->DstAddr : ppIpV6Hdr->DstAddr,
+                                             ppTcpHdr->SrcPort, ppTcpHdr->DstPort, desync_cutoff)) {
+                                if (do_fake_packet) {
+                                    flush_tx(w_filter);
+                                    TCP_HANDLE_OUTGOING_FAKE_PACKET(send_fake_https_request);
+                                }
+                                if (do_native_frag) {
+                                    // Signal for native fragmentation code handler
+                                    should_recalc_checksum = 1;
+                                }
                             }
                         }
                     }
@@ -1747,7 +1849,11 @@ int main(int argc, char *argv[]) {
                     if (find_header_and_get_info(packet_data, packet_dataLen,
                         http_host_find, &hdr_name_addr, &hdr_value_addr, &hdr_value_len) &&
                         hdr_value_len > 0 && hdr_value_len <= HOST_MAXLEN &&
-                        (do_blacklist ? blackwhitelist_check_hostname(hdr_value_addr, hdr_value_len) : 1))
+                        (do_blacklist ? blackwhitelist_check_hostname(hdr_value_addr, hdr_value_len) : 1) &&
+                        cutoff_allow(packet_v6, 1,
+                                     packet_v4 ? &ppIpHdr->SrcAddr : ppIpV6Hdr->SrcAddr,
+                                     packet_v4 ? &ppIpHdr->DstAddr : ppIpV6Hdr->DstAddr,
+                                     ppTcpHdr->SrcPort, ppTcpHdr->DstPort, desync_cutoff))
                     {
                         host_addr = hdr_value_addr;
                         host_len = hdr_value_len;
@@ -1928,15 +2034,20 @@ int main(int argc, char *argv[]) {
             {
                 int resend;
 
-                if (do_tcp_verb)
-                    printf("QUIC Initial: sending %d fake packet(s) first\n", fakes_resend);
-                flush_tx(w_filter);
-                /* Like the TCP fakes: --set-ttl and --wrong-chksum; with neither, the checksum is wrong. */
-                for (resend = 0; resend < fakes_resend; resend++)
-                    if (send_fake_quic(w_filter, &addr, packet, packetLen, packet_v6,
-                                       ttl_of_fake_packet, (BYTE)(do_wrong_chksum || !ttl_of_fake_packet)) &&
-                        do_tcp_verb)
-                        printf("Can't send the fake QUIC packet (error %lu)\n", GetLastError());
+                if (cutoff_allow(packet_v6, 2,
+                                 packet_v4 ? &ppIpHdr->SrcAddr : ppIpV6Hdr->SrcAddr,
+                                 packet_v4 ? &ppIpHdr->DstAddr : ppIpV6Hdr->DstAddr,
+                                 ppUdpHdr->SrcPort, ppUdpHdr->DstPort, desync_cutoff)) {
+                    if (do_tcp_verb)
+                        printf("QUIC Initial: sending %d fake packet(s) first\n", fakes_resend);
+                    flush_tx(w_filter);
+                    /* Like the TCP fakes: --set-ttl and --wrong-chksum; with neither, the checksum is wrong. */
+                    for (resend = 0; resend < fakes_resend; resend++)
+                        if (send_fake_quic(w_filter, &addr, packet, packetLen, packet_v6,
+                                           ttl_of_fake_packet, (BYTE)(do_wrong_chksum || !ttl_of_fake_packet)) &&
+                            do_tcp_verb)
+                            printf("Can't send the fake QUIC packet (error %lu)\n", GetLastError());
+                }
             }
 
             /* Else if we got UDP packet with data */
