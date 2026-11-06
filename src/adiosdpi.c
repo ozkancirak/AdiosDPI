@@ -384,16 +384,24 @@ static void finalize_filter_strings(const struct filter_features *f) {
     replace_token(&filter_passive_string, IPID_TEMPLATE, "");
 }
 
-static char* dumb_memmem(const char* haystack, unsigned int hlen,
+/* memchr jumps over the bytes that can't start the needle; the full compare runs only there. */
+static char* fast_memmem(const char* haystack, unsigned int hlen,
                          const char* needle, unsigned int nlen)
 {
-    // naive implementation
-    if (nlen > hlen) return NULL;
-    size_t i;
-    for (i=0; i<hlen-nlen+1; i++) {
-        if (memcmp(haystack+i,needle,nlen)==0) {
-            return (char*)(haystack+i);
-        }
+    const char *p = haystack;
+    const char *end = haystack + hlen;
+
+    if (!nlen)
+        return (char *)haystack;
+    if (nlen > hlen)
+        return NULL;
+    while ((size_t)(end - p) >= nlen) {
+        p = memchr(p, needle[0], (size_t)(end - p));
+        if (!p || (size_t)(end - p) < nlen)
+            return NULL;
+        if (memcmp(p, needle, nlen) == 0)
+            return (char *)p;
+        p++;
     }
     return NULL;
 }
@@ -519,8 +527,8 @@ static int is_passivedpi_redirect(const char *pktdata, unsigned int pktlen) {
         memcmp(pktdata, http10_redirect_302, sizeof(http10_redirect_302)-1) == 0)
     {
         /* Then check if this is a redirect to new http site with Connection: close */
-        if (dumb_memmem(pktdata, pktlen, location_http, sizeof(location_http)-1) &&
-            dumb_memmem(pktdata, pktlen, connection_close, sizeof(connection_close)-1)) {
+        if (fast_memmem(pktdata, pktlen, location_http, sizeof(location_http)-1) &&
+            fast_memmem(pktdata, pktlen, connection_close, sizeof(connection_close)-1)) {
             return TRUE;
         }
     }
@@ -539,7 +547,7 @@ static int find_header_and_get_info(const char *pktdata, unsigned int pktlen,
     *hdrvalueaddr = NULL;
 
     /* Search for the header */
-    hdr_begin = dumb_memmem(pktdata, pktlen,
+    hdr_begin = fast_memmem(pktdata, pktlen,
                 hdrname, strlen(hdrname));
     if (!hdr_begin) return FALSE;
     if (pktdata > hdr_begin) return FALSE;
@@ -549,7 +557,7 @@ static int find_header_and_get_info(const char *pktdata, unsigned int pktlen,
     *hdrvalueaddr = hdr_begin + strlen(hdrname);
 
     /* Search for header end (\r\n) */
-    data_addr_rn = dumb_memmem(*hdrvalueaddr,
+    data_addr_rn = fast_memmem(*hdrvalueaddr,
                         pktlen - (uintptr_t)(*hdrvalueaddr - pktdata),
                         "\r\n", 2);
     if (data_addr_rn) {
