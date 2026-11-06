@@ -186,12 +186,14 @@ static const char *http_methods[] = {
     "OPTIONS ",
 };
 
-/* Long-only option. */
+/* Long-only options. */
 #define OPT_CUTOFF 1000
+#define OPT_BLACKLIST_EXCLUDE 1001
 
 static struct option long_options[] = {
     {"port",        required_argument, 0,  'z' },
     {"cutoff",      required_argument, 0,  OPT_CUTOFF },
+    {"blacklist-exclude", required_argument, 0,  OPT_BLACKLIST_EXCLUDE },
     {"dns-addr",    required_argument, 0,  'd' },
     {"dns-port",    required_argument, 0,  'g' },
     {"dnsv6-addr",  required_argument, 0,  '!' },
@@ -1236,6 +1238,12 @@ int main(int argc, char *argv[]) {
                     exit(ERROR_BLACKLIST_LOAD);
                 }
                 break;
+            case OPT_BLACKLIST_EXCLUDE: // --blacklist-exclude
+                if (!blackwhitelist_load_exclude_list(optarg)) {
+                    printf("Can't load the exclusion list from file!\n");
+                    exit(ERROR_BLACKLIST_LOAD);
+                }
+                break;
             case ']': // --allow-no-sni
                 do_allow_no_sni = 1;
                 break;
@@ -1391,8 +1399,13 @@ int main(int argc, char *argv[]) {
                 "                          and say which one works. Needs a few seconds per candidate.\n"
                 " --log         <txtfile>  write everything the program prints to this file instead of the console\n"
                 "                          (a new file each run). Use it with --install, a service has no console.\n"
+                , stdout);          /* ISO C99 only requires compilers to take 4095 characters per string */
+                fputs(
                 " --blacklist   <txtfile>  perform circumvention tricks only to host names and subdomains from\n"
                 "                          supplied text file (HTTP Host/TLS SNI).\n"
+                "                          This option can be supplied multiple times.\n"
+                " --blacklist-exclude <txtfile>  leave the tricks off for these host names and subdomains,\n"
+                "                          even when --blacklist matches them. Same file format.\n"
                 "                          This option can be supplied multiple times.\n"
                 " --reasm                 when the server name is not in the first segment of a ClientHello, hold that segment\n"
                 "                          until the next one comes, so --blacklist and --frag-by-sni can use the name.\n"
@@ -1404,7 +1417,7 @@ int main(int argc, char *argv[]) {
                 " --frag-by-sni            if SNI is detected in TLS packet, fragment the packet right before SNI value.\n"
                 " --frag-in-sni            same, but fragment in the middle of the SNI value (needs --native-frag,\n"
                 "                          which the modes -5 to -9 have).\n"
-                , stdout);          /* two strings: one of this size is more than C99 compilers must accept */
+                , stdout);
                 puts(
                 " --set-ttl     <value>    activate Fake Request Mode and send it with supplied TTL value.\n"
                 "                          DANGEROUS! May break websites in unexpected ways. Use with care (or --blacklist).\n"
@@ -1464,6 +1477,9 @@ int main(int argc, char *argv[]) {
                 exit(ERROR_DEFAULT);
         }
     }
+
+    if (!do_blacklist && blackwhitelist_have_exclusions())
+        puts("WARNING: --blacklist-exclude does nothing without --blacklist.");
 
     if (dns_check_domain)
         return dns_check(dns_check_domain, do_dnsv4_redirect ? dnsv4_addr : 0,

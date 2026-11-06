@@ -12,12 +12,10 @@
 #include "utils/uthash.h"
 #include "utils/getline.h"
 
-typedef struct blackwhitelist_record {
+typedef struct domain_record {
     const char *host;
     UT_hash_handle hh;   /* makes this structure hashable */
-} blackwhitelist_record_t;
-
-static blackwhitelist_record_t *blackwhitelist = NULL;
+} domain_record_t;
 
 #define MAX_LISTS 16
 #define RELOAD_INTERVAL_MS 3000
@@ -28,19 +26,26 @@ struct stamp {
     DWORD size;
 };
 
-/* The files the table was built from (more than MAX_LISTS are loaded but not watched). */
-static struct {
-    char path[MAX_PATH];
-    struct stamp stamp;
-} lists[MAX_LISTS];
-static int list_count;
-static ULONGLONG next_check;
+struct domain_list {
+    domain_record_t *table;
+    /* The files the table was built from (more than MAX_LISTS are loaded but not watched). */
+    struct {
+        char path[MAX_PATH];
+        struct stamp stamp;
+    } files[MAX_LISTS];
+    int file_count;
+    ULONGLONG next_check;
+};
 
-static int check_get_hostname(const char *host) {
-    blackwhitelist_record_t *tmp_record = NULL;
-    if (!blackwhitelist) return FALSE;
+/* --blacklist says what to trick, --blacklist-exclude says what to leave alone. */
+static struct domain_list blacklist;
+static struct domain_list exclusions;
 
-    HASH_FIND_STR(blackwhitelist, host, tmp_record);
+static int check_get_hostname(struct domain_list *list, const char *host) {
+    domain_record_t *tmp_record = NULL;
+    if (!list->table) return FALSE;
+
+    HASH_FIND_STR(list->table, host, tmp_record);
     if (tmp_record) {
         debug("check_get_hostname found host\n");
         return TRUE;
@@ -49,17 +54,17 @@ static int check_get_hostname(const char *host) {
     return FALSE;
 }
 
-static int add_hostname(const char *host) {
-    blackwhitelist_record_t *tmp_record;
+static int add_hostname(struct domain_list *list, const char *host) {
+    domain_record_t *tmp_record;
     char *host_c;
 
     if (!host)
         return FALSE;
-    if (check_get_hostname(host)) {
+    if (check_get_hostname(list, host)) {
         debug("Not added host %s\n", host);
         return FALSE;
     }
-    tmp_record = malloc(sizeof(blackwhitelist_record_t));
+    tmp_record = malloc(sizeof(domain_record_t));
     host_c = strdup(host);
     if (!tmp_record || !host_c) {
         free(tmp_record);
@@ -67,7 +72,7 @@ static int add_hostname(const char *host) {
         return FALSE;
     }
     tmp_record->host = host_c;
-    HASH_ADD_KEYPTR(hh, blackwhitelist, tmp_record->host,
+    HASH_ADD_KEYPTR(hh, list->table, tmp_record->host,
                     strlen(tmp_record->host), tmp_record);
     debug("Added host %s\n", host_c);
     return TRUE;
@@ -80,8 +85,8 @@ static void to_lower(char *s) {
             *s = (char)(*s + ('a' - 'A'));
 }
 
-static void free_table(blackwhitelist_record_t **table) {
-    blackwhitelist_record_t *rec, *tmp;
+static void free_table(domain_record_t **table) {
+    domain_record_t *rec, *tmp;
 
     HASH_ITER(hh, *table, rec, tmp) {
         HASH_DEL(*table, rec);
@@ -100,7 +105,7 @@ static void get_stamp(const char *path, struct stamp *stamp) {
     }
 }
 
-static int read_list(const char *filename, const char *verb) {
+static int read_list(struct domain_list *list, const char *filename, const char *verb) {
     char *line;
     size_t linelen = HOST_MAXLEN + 1;
     int cnt = 0;
@@ -127,88 +132,114 @@ static int read_list(const char *filename, const char *verb) {
             printf("WARNING: host %s is less than 2 characters, skipping\n", line);
             continue;
         }
-        if (add_hostname(line))
+        if (add_hostname(list, line))
             cnt++;
     }
     free(line);
     fclose(fp);
-    if (!blackwhitelist) return FALSE;
+    if (!list->table) return FALSE;
     printf("%s %d hosts from file %s\n", verb, cnt, filename);
     return TRUE;
 }
 
-int blackwhitelist_load_list(const char *filename) {
-    if (!read_list(filename, "Loaded"))
+static int load_list(struct domain_list *list, const char *filename) {
+    if (!read_list(list, filename, "Loaded"))
         return FALSE;
-    if (list_count < MAX_LISTS) {
-        if (!GetFullPathName(filename, MAX_PATH, lists[list_count].path, NULL))
-            snprintf(lists[list_count].path, MAX_PATH, "%s", filename);
-        get_stamp(lists[list_count].path, &lists[list_count].stamp);
-        list_count++;
+    if (list->file_count < MAX_LISTS) {
+        if (!GetFullPathName(filename, MAX_PATH, list->files[list->file_count].path, NULL))
+            snprintf(list->files[list->file_count].path, MAX_PATH, "%s", filename);
+        get_stamp(list->files[list->file_count].path, &list->files[list->file_count].stamp);
+        list->file_count++;
     }
     return TRUE;
 }
 
 /* Builds the table again from all files. The old table stays if any of them can't be read. */
-static void reload_lists(void) {
-    blackwhitelist_record_t *old = blackwhitelist;
+static void reload_lists(struct domain_list *list) {
+    domain_record_t *old = list->table;
     int i, ok = TRUE;
 
-    blackwhitelist = NULL;
-    for (i = 0; i < list_count && ok; i++)
-        ok = read_list(lists[i].path, "Reloaded");
+    list->table = NULL;
+    for (i = 0; i < list->file_count && ok; i++)
+        ok = read_list(list, list->files[i].path, "Reloaded");
     if (ok) {
         free_table(&old);
         return;
     }
-    free_table(&blackwhitelist);
-    blackwhitelist = old;
-    printf("WARNING: can't read the blacklist again, keeping the previous one\n");
+    free_table(&list->table);
+    list->table = old;
+    printf("WARNING: can't read the lists again, keeping the previous ones\n");
 }
 
 /* Looks at the files now and then; at most one look per RELOAD_INTERVAL_MS. */
-static void reload_if_changed(void) {
+static void reload_if_changed(struct domain_list *list) {
     ULONGLONG now = GetTickCount64();
     int i, changed = FALSE;
 
-    if (now < next_check)
+    if (now < list->next_check)
         return;
-    next_check = now + RELOAD_INTERVAL_MS;
-    for (i = 0; i < list_count; i++) {
+    list->next_check = now + RELOAD_INTERVAL_MS;
+    for (i = 0; i < list->file_count; i++) {
         struct stamp stamp;
 
-        get_stamp(lists[i].path, &stamp);
-        if (CompareFileTime(&stamp.time, &lists[i].stamp.time) != 0 || stamp.size != lists[i].stamp.size) {
-            lists[i].stamp = stamp;     /* a broken file is tried again only after it changes again */
+        get_stamp(list->files[i].path, &stamp);
+        if (CompareFileTime(&stamp.time, &list->files[i].stamp.time) != 0 ||
+            stamp.size != list->files[i].stamp.size) {
+            list->files[i].stamp = stamp;   /* a broken file is tried again only after it changes again */
             changed = TRUE;
         }
     }
     if (changed)
-        reload_lists();
+        reload_lists(list);
+}
+
+int blackwhitelist_load_list(const char *filename) {
+    return load_list(&blacklist, filename);
+}
+
+int blackwhitelist_load_exclude_list(const char *filename) {
+    return load_list(&exclusions, filename);
+}
+
+int blackwhitelist_have_exclusions(void) {
+    return exclusions.table != NULL;
+}
+
+/* True for the host itself and for any name below it (example.com matches www.example.com). */
+static int contains_hostname(struct domain_list *list, const char *host) {
+    const char *tokenized_host;
+
+    if (check_get_hostname(list, host))
+        return TRUE;
+
+    tokenized_host = strchr(host, '.');
+    while (tokenized_host != NULL && tokenized_host < (host + HOST_MAXLEN)) {
+        if (check_get_hostname(list, tokenized_host + 1))
+            return TRUE;
+        tokenized_host = strchr(tokenized_host + 1, '.');
+    }
+    return FALSE;
 }
 
 int blackwhitelist_check_hostname(const char *host_addr, size_t host_len) {
     char current_host[HOST_MAXLEN + 1];
-    char *tokenized_host = NULL;
 
     if (host_len > HOST_MAXLEN) return FALSE;
-    reload_if_changed();
     current_host[0] = '\0';             /* an empty name is looked up as such, not as what the stack held */
     if (host_addr && host_len) {
         memcpy(current_host, host_addr, host_len);
         current_host[host_len] = '\0';
         to_lower(current_host);
     }
+    reload_if_changed(&blacklist);
+    reload_if_changed(&exclusions);
 
-    if (check_get_hostname(current_host))
-            return TRUE;
-
-    tokenized_host = strchr(current_host, '.');
-    while (tokenized_host != NULL && tokenized_host < (current_host + HOST_MAXLEN)) {
-        if (check_get_hostname(tokenized_host + 1))
-            return TRUE;
-        tokenized_host = strchr(tokenized_host + 1, '.');
+    if (contains_hostname(&exclusions, current_host)) {
+        debug("____blackwhitelist_check_hostname excluded: host %s\n", current_host);
+        return FALSE;
     }
+    if (contains_hostname(&blacklist, current_host))
+        return TRUE;
 
     debug("____blackwhitelist_check_hostname FALSE: host %s\n", current_host);
     return FALSE;
