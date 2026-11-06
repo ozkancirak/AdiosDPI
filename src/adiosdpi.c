@@ -712,6 +712,33 @@ static int open_log(const char *name) {
 
 static char batch[BATCH_BUF_SIZE];
 static WINDIVERT_ADDRESS batch_addrs[BATCH_SIZE];
+static char tx_batch[BATCH_BUF_SIZE];
+static WINDIVERT_ADDRESS tx_addrs[BATCH_SIZE];
+static UINT tx_len;
+static int tx_count;
+
+/* Hand the queued packets to the driver in one call. */
+static void flush_tx(HANDLE w_filter) {
+    if (tx_count == 0)
+        return;
+    if (tx_count == 1)
+        WinDivertSend(w_filter, tx_batch, tx_len, NULL, &tx_addrs[0]);
+    else
+        WinDivertSendEx(w_filter, tx_batch, tx_len, NULL, 0, tx_addrs,
+                        (UINT)tx_count * sizeof(WINDIVERT_ADDRESS), NULL);
+    tx_len = 0;
+    tx_count = 0;
+}
+
+static void queue_tx(HANDLE w_filter, const char *packet, UINT len,
+                     const WINDIVERT_ADDRESS *addr) {
+    if (tx_count >= BATCH_SIZE || tx_len + len > sizeof(tx_batch))
+        flush_tx(w_filter);
+    memcpy(tx_batch + tx_len, packet, len);
+    tx_addrs[tx_count] = *addr;
+    tx_len += len;
+    tx_count++;
+}
 
 /* Length of the first packet in a batch: the packets are packed without gaps. */
 static UINT batch_packet_len(const char *packet, UINT len) {
@@ -1662,6 +1689,7 @@ int main(int argc, char *argv[]) {
                             printf("Blocked HTTPS website SNI: %s\n", lsni);
 #endif
                             if (do_fake_packet) {
+                                flush_tx(w_filter);
                                 TCP_HANDLE_OUTGOING_FAKE_PACKET(send_fake_https_request);
                             }
                             if (do_native_frag) {
@@ -1703,6 +1731,7 @@ int main(int argc, char *argv[]) {
                         }
 
                         if (do_fake_packet) {
+                            flush_tx(w_filter);
                             TCP_HANDLE_OUTGOING_FAKE_PACKET(send_fake_http_request);
                         }
 
@@ -1805,6 +1834,7 @@ int main(int argc, char *argv[]) {
                     }
 
                     if (current_fragment_size) {
+                        flush_tx(w_filter);
                         send_native_fragment(w_filter, addr, packet, packetLen, packet_data,
                                             packet_dataLen,packet_v4, packet_v6,
                                             ppIpHdr, ppIpV6Hdr, ppTcpHdr,
@@ -1868,6 +1898,7 @@ int main(int argc, char *argv[]) {
 
                 if (do_tcp_verb)
                     printf("QUIC Initial: sending %d fake packet(s) first\n", fakes_resend);
+                flush_tx(w_filter);
                 /* Like the TCP fakes: --set-ttl and --wrong-chksum; with neither, the checksum is wrong. */
                 for (resend = 0; resend < fakes_resend; resend++)
                     if (send_fake_quic(w_filter, &addr, packet, packetLen, packet_v6,
@@ -1950,9 +1981,10 @@ int main(int argc, char *argv[]) {
                 if (should_recalc_checksum) {
                     WinDivertHelperCalcChecksums(packet, packetLen, &addr, (UINT64)0LL);
                 }
-                WinDivertSend(w_filter, packet, packetLen, NULL, &addr);
+                queue_tx(w_filter, packet, packetLen, &addr);
             }
         }
+        flush_tx(w_filter);
     }
     deinit_all();
     return 0;
