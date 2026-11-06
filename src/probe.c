@@ -2,10 +2,12 @@
  * Finds out which preset opens a site on the current connection.
  */
 
+#include <winsock2.h>
 #include <windows.h>
 #include "lazydll.h"
 #include <stdio.h>
 #include <string.h>
+#include "dnscheck.h"
 #include "dnsredir.h"
 #include "probe.h"
 
@@ -34,6 +36,40 @@ static const struct {
     {"dns + ttl 6",        "--preset dns " MODE5 " --set-ttl 6"},
 };
 #define CANDIDATE_COUNT (sizeof(candidates) / sizeof(*candidates))
+#define NO_TOOL 0               /* indexes in candidates[] that probe() may skip */
+#define DNS_ONLY 1
+
+/* Can a TCP connection to addr port 443 be made within a few seconds? */
+static int tcp_reachable(uint32_t addr)
+{
+    WSADATA wsa;
+    struct sockaddr_in sa;
+    struct timeval tv = {4, 0};
+    fd_set w, e;
+    u_long nonblocking = 1;
+    SOCKET s;
+    int ok = 0;
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+        return 0;
+    s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s != INVALID_SOCKET) {
+        memset(&sa, 0, sizeof(sa));
+        sa.sin_family = AF_INET;
+        sa.sin_port = htons(443);
+        sa.sin_addr.s_addr = addr;
+        ioctlsocket(s, (long)FIONBIO, &nonblocking);
+        connect(s, (struct sockaddr *)&sa, sizeof(sa));
+        FD_ZERO(&w);
+        FD_ZERO(&e);
+        FD_SET(s, &w);
+        FD_SET(s, &e);
+        ok = select(0, NULL, &w, &e, &tv) > 0 && FD_ISSET(s, &w);      /* a refused connection shows up in e */
+        closesocket(s);
+    }
+    WSACleanup();
+    return ok;
+}
 
 /* A real HTTPS request: DNS, TCP and TLS must all work, and the certificate must match. */
 static int https_reachable(const char *domain)
@@ -104,11 +140,39 @@ static HANDLE start_child(const char *args, HANDLE *process)
 int probe(const char *domain)
 {
     size_t i;
+    uint32_t addr;
+    int dns;
 
-    printf("Probing https://%s/ (each candidate takes a few seconds)\n", domain);
+    /* Look at what is wrong before trying fixes, so no time goes to ones that can't help. */
+    printf("Checking https://%s/\n", domain);
+    dns = dns_verdict(domain, &addr);
+    if (dns == DNS_POISONED)
+        puts("  DNS      poisoned: the system resolver does not give the real address");
+    else if (dns == DNS_OK)
+        puts("  DNS      fine");
+    else
+        puts(dns == DNS_UNSURE ? "  DNS      no block page found, the answers just differ"
+                               : "  DNS      can't tell (no answer from the other DNS servers)");
+    if (addr) {
+        const unsigned char *b = (const unsigned char *)&addr;
+        int reach = tcp_reachable(addr);
+
+        printf("  Connect  %u.%u.%u.%u port 443: %s\n", b[0], b[1], b[2], b[3], reach ? "reachable" : "no connection");
+        /* only an address that other DNS servers confirm says anything about the site */
+        if (!reach && (dns == DNS_OK || dns == DNS_POISONED)) {
+            puts("\nCan't connect to the site's address. Either this PC is offline or the address\n"
+                 "itself is blocked, which no preset can fix (a VPN can).");
+            return 1;
+        }
+    }
+
+    printf("Trying fixes, least intrusive first (each takes a few seconds)\n");
     for (i = 0; i < CANDIDATE_COUNT; i++) {
         HANDLE job = NULL, process = NULL;
         int ok;
+
+        if ((i == NO_TOOL && dns == DNS_POISONED) || (i == DNS_ONLY && dns == DNS_OK))
+            continue;                       /* it can't work / can't be what is wrong */
 
         printf("  %-16s ", candidates[i].label);
         fflush(stdout);
