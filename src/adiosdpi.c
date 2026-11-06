@@ -583,7 +583,10 @@ static PVOID find_http_method_end(const char *pkt, unsigned int http_frag, int *
     return NULL;
 }
 
-/** Fragment and send the packet.
+static void queue_tx(HANDLE w_filter, const char *packet, UINT len,
+                     const WINDIVERT_ADDRESS *addr);
+
+/** Fragment and queue the packet.
  *
  * This function cuts off the end of the packet (step=0) or
  * the beginning of the packet (step=1) with fragment_size bytes.
@@ -647,11 +650,7 @@ static void send_native_fragment(HANDLE w_filter, WINDIVERT_ADDRESS addr,
     WinDivertHelperCalcChecksums(
         packet, packetLen, &addr, 0
     );
-    WinDivertSend(
-        w_filter, packet,
-        packetLen,
-        NULL, &addr
-    );
+    queue_tx(w_filter, packet, packetLen, &addr);
     memcpy(packet, packet_bak, orig_packetLen);
     //printf("Sent native fragment of %d size (step%d)\n", packetLen, step);
 }
@@ -1834,7 +1833,6 @@ int main(int argc, char *argv[]) {
                     }
 
                     if (current_fragment_size) {
-                        flush_tx(w_filter);
                         send_native_fragment(w_filter, addr, packet, packetLen, packet_data,
                                             packet_dataLen,packet_v4, packet_v6,
                                             ppIpHdr, ppIpV6Hdr, ppTcpHdr,
@@ -1844,6 +1842,7 @@ int main(int argc, char *argv[]) {
                                             packet_dataLen,packet_v4, packet_v6,
                                             ppIpHdr, ppIpV6Hdr, ppTcpHdr,
                                             current_fragment_size, !do_reverse_frag);
+                        flush_tx(w_filter);
                         continue;
                     }
                 }
