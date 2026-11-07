@@ -99,3 +99,17 @@ jobs:
           name: adiosdpi-zip
           path: zip/*.zip
           retention-days: 14
+
+  # The packet code (split points, split pieces, the md5 fake) checked on real Windows,
+  # because the checksum helpers come from WinDivert.dll. No driver and no admin rights needed.
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - shell: bash
+        run: |
+          curl -sSLO "$WINDIVERT_URL"
+          echo "$WINDIVERT_SHA256  $WINDIVERT_NAME" | sha256sum -c
+          7z x -y "$WINDIVERT_NAME" > /dev/null
+          WINDIVERT="$PWD/$WINDIVERT_BASENAME" sh tests/run.sh
