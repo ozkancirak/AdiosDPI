@@ -26,7 +26,7 @@ CFLAGS = -std=c99 -pie -fPIE -pipe -isystem $(WINDIVERTHEADERS) -L$(WINDIVERTLIB
          -Wformat-signedness -Wstrict-overflow=2 -Wcast-align=strict \
          -Wfloat-equal -Wcast-align -Wsign-conversion \
          #-fstack-protector-strong
-LDFLAGS = -fstack-protector -Wl,-O1,-pie,--dynamicbase,--nxcompat,--sort-common,--as-needed \
+LDFLAGS = -fstack-protector -Wl,-O1,-pie,--dynamicbase,--nxcompat,--sort-common,--as-needed,--subsystem,windows\
 -Wl,--disable-auto-image-base
 
 ifdef BIT64
