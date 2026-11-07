@@ -9,3 +9,9 @@ Used at run time, not part of this repository:
     Copyright basil00. Dual-licensed under LGPL-3.0 or GPL-2.0.
     Builds load WinDivert.dll and WinDivert64.sys; the license text ships
     with the WinDivert download.
+
+Not part of this repository (no code taken):
+
+  GoodbyeDPI-Turkey    https://github.com/cagritaskn/GoodbyeDPI-Turkey
+    Cagri Taskin. The Turkey presets (ttl3, dns-ttl3, dns-ttl5) follow the
+    option sets of its profiles.
