@@ -73,3 +73,29 @@ jobs:
           name: adiosdpi-exe
           path: out/
           retention-days: 14
+
+      # What a user downloads: the program, the WinDivert files it needs next to it, and the licenses.
+      # A 32-bit program on 64-bit Windows loads the 64-bit driver, so the x86 folder has both.
+      - name: Package
+        run: |
+          for arch in x64 x86; do
+            d=zip/AdiosDPI-$arch
+            mkdir -p $d/lists
+            if [ $arch = x64 ]; then
+              cp out/adiosdpi-x86_64.exe $d/adiosdpi.exe
+              cp $WINDIVERT_BASENAME/x64/WinDivert.dll $WINDIVERT_BASENAME/x64/WinDivert64.sys $d/
+            else
+              cp out/adiosdpi-x86.exe $d/adiosdpi.exe
+              cp $WINDIVERT_BASENAME/x86/WinDivert.dll $WINDIVERT_BASENAME/x86/WinDivert32.sys $WINDIVERT_BASENAME/x86/WinDivert64.sys $d/
+            fi
+            cp $WINDIVERT_BASENAME/LICENSE $d/WinDivert-LICENSE.txt
+            cp LICENSE NOTICE README.md README.tr.md $d/
+            cp lists/*.txt $d/lists/
+            (cd zip && zip -qr AdiosDPI-$arch.zip AdiosDPI-$arch)
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: adiosdpi-zip
+          path: zip/*.zip
+          retention-days: 14
