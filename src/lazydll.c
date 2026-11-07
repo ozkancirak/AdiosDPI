@@ -62,3 +62,108 @@ const struct bcrypt_api *bcrypt_api(void) {
         state = 1;
     return ok ? &api : NULL;
 }
+
+#undef LAZY_BCRYPT
+#define LAZY_USER32(name) LAZY_LOAD(mod, api, ok, name)
+
+const struct user32_api *user32_api(void) {
+    static struct user32_api api;
+    static int state;
+    HMODULE mod;
+    int ok = 1;
+
+    if (state)
+        return state > 0 ? &api : NULL;
+    state = -1;
+    mod = load_system_dll("user32.dll");
+    if (!mod)
+        return NULL;
+    USER32_FUNCS(LAZY_USER32)
+    if (ok)
+        state = 1;
+    return ok ? &api : NULL;
+}
+
+#undef LAZY_USER32
+#define LAZY_GDI32(name) LAZY_LOAD(mod, api, ok, name)
+
+const struct gdi32_api *gdi32_api(void) {
+    static struct gdi32_api api;
+    static int state;
+    HMODULE mod;
+    int ok = 1;
+
+    if (state)
+        return state > 0 ? &api : NULL;
+    state = -1;
+    mod = load_system_dll("gdi32.dll");
+    if (!mod)
+        return NULL;
+    GDI32_FUNCS(LAZY_GDI32)
+    if (ok)
+        state = 1;
+    return ok ? &api : NULL;
+}
+
+#undef LAZY_GDI32
+#define LAZY_DWMAPI(name) LAZY_LOAD(mod, api, ok, name)
+
+const struct dwmapi_api *dwmapi_api(void) {
+    static struct dwmapi_api api;
+    static int state;
+    HMODULE mod;
+    int ok = 1;
+
+    if (state)
+        return state > 0 ? &api : NULL;
+    state = -1;
+    mod = load_system_dll("dwmapi.dll");
+    if (!mod)
+        return NULL;
+    DWMAPI_FUNCS(LAZY_DWMAPI)
+    if (ok)
+        state = 1;
+    return ok ? &api : NULL;
+}
+
+#undef LAZY_DWMAPI
+#define LAZY_UXTHEME(name) LAZY_LOAD(mod, api, ok, name)
+
+const struct uxtheme_api *uxtheme_api(void) {
+    static struct uxtheme_api api;
+    static int state;
+    HMODULE mod;
+    int ok = 1;
+
+    if (state)
+        return state > 0 ? &api : NULL;
+    state = -1;
+    mod = load_system_dll("uxtheme.dll");
+    if (!mod)
+        return NULL;
+    UXTHEME_FUNCS(LAZY_UXTHEME)
+    if (ok)
+        state = 1;
+    return ok ? &api : NULL;
+}
+
+#undef LAZY_UXTHEME
+#define LAZY_COMCTL32(name) LAZY_LOAD(mod, api, ok, name)
+
+const struct comctl32_api *comctl32_api(void) {
+    static struct comctl32_api api;
+    static int state;
+    HMODULE mod;
+    int ok = 1;
+
+    if (state)
+        return state > 0 ? &api : NULL;
+    state = -1;
+    mod = load_system_dll("comctl32.dll");
+    if (!mod)
+        return NULL;
+    COMCTL32_FUNCS(LAZY_COMCTL32)
+    if (ok)
+        state = 1;
+    return ok ? &api : NULL;
+}

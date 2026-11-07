@@ -19,6 +19,7 @@
 #include "service.h"
 #include "tls.h"
 #include "reasm.h"
+#include "gui.h"
 #include "quic.h"
 #include "dnsredir.h"
 #include "dnscheck.h"
@@ -957,9 +958,19 @@ int main(int argc, char *argv[]) {
     char *hdr_name_addr = NULL, *hdr_value_addr = NULL;
     unsigned int hdr_value_len;
 
+    /* A window program has no console of its own: join the shell's, if there is one. */
+    int have_console = console_attach();
+
     // Make sure to search DLLs only in safe path, not in current working dir.
     SetDllDirectory("");
     SetSearchPathMode(BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE | BASE_SEARCH_PATH_PERMANENT);
+
+    {   /* The window reads what a child prints through a pipe: the text must not wait in a buffer. */
+        DWORD console_mode;
+
+        if (!GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), &console_mode))
+            setvbuf(stdout, NULL, _IONBF, 0);
+    }
 
     if (!running_from_service) {
         running_from_service = 1;
@@ -978,6 +989,10 @@ int main(int argc, char *argv[]) {
         }
         running_from_service = 0;
     }
+
+    /* A double click opens the window; a shell with no options still runs the default mode. */
+    if ((argc == 1 && !have_console) || (argc == 2 && strcmp(argv[1], "--gui") == 0))
+        return gui_run(ADIOSDPI_VERSION);
 
     argv = preset_expand(&argc, argv);
     if (argv == NULL)
@@ -1403,6 +1418,7 @@ int main(int argc, char *argv[]) {
                 "                          other options given, and start it. File names are turned into full paths.\n"
                 " --remove                 stop and remove the AdiosDPI service.\n"
                 " --status                 show whether the service runs and whether another WinDivert tool is loaded.\n"
+                " --gui                    open the window (it also opens when the program is started by a double click).\n"
                 " --probe       <domain>   try to open the site without any tool and then with each preset,\n"
                 "                          and say which one works. Needs a few seconds per candidate.\n"
                 " --log         <txtfile>  write everything the program prints to this file instead of the console\n"
