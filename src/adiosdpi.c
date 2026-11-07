@@ -192,12 +192,14 @@ static const char *http_methods[] = {
 #define OPT_CUTOFF 1000
 #define OPT_BLACKLIST_EXCLUDE 1001
 #define OPT_SPLIT_POS 1002
+#define OPT_MD5SIG 1003
 
 static struct option long_options[] = {
     {"port",        required_argument, 0,  'z' },
     {"cutoff",      required_argument, 0,  OPT_CUTOFF },
     {"blacklist-exclude", required_argument, 0,  OPT_BLACKLIST_EXCLUDE },
     {"split-pos",   required_argument, 0,  OPT_SPLIT_POS },
+    {"md5sig",      no_argument,       0,  OPT_MD5SIG },
     {"dns-addr",    required_argument, 0,  'd' },
     {"dns-port",    required_argument, 0,  'g' },
     {"dnsv6-addr",  required_argument, 0,  '!' },
@@ -1423,6 +1425,10 @@ int main(int argc, char *argv[]) {
             case 'x': // --debug-exit
                 debug_exit = true;
                 break;
+            case OPT_MD5SIG: // --md5sig
+                do_fake_packet = 1;
+                fake_md5sig = 1;
+                break;
             case OPT_SPLIT_POS: // --split-pos
                 if (!split_parse(optarg, &split_spec)) {
                     printf("Can't read the --split-pos list \"%s\" (at most %d places, such as 1,midsld,sniext+1).\n",
@@ -1492,6 +1498,10 @@ int main(int argc, char *argv[]) {
                 " --frag-by-sni            if SNI is detected in TLS packet, fragment the packet right before SNI value.\n"
                 " --frag-in-sni            same, but fragment in the middle of the SNI value (needs --native-frag,\n"
                 "                          which the modes -5 to -9 have).\n"
+                " --md5sig                activate Fake Request Mode and send one more fake with a TCP MD5 signature\n"
+                "                          option and a wrong hash: Linux servers drop it, a DPI box usually does not\n"
+                "                          look. A server that does not check the option would take the fake as data,\n"
+                "                          so use it with --blacklist or where you know it works.\n"
                 " --split-pos   <list>     cut the first TLS packet at several places, such as 1,midsld,sniext+1.\n"
                 "                          A place is N (bytes from the start), -N (from the end), or host, endhost,\n"
                 "                          sld, endsld, midsld (middle of the second-level domain), sniext, each with\n"

@@ -18,6 +18,14 @@ struct fake_t {
 static struct fake_t *fakes[30] = {0};
 int fakes_count = 0;
 int fakes_resend = 1;
+int fake_md5sig = 0;
+
+/* TCP option block of a fake: two NOPs, then option 19 (MD5 signature) with a hash nobody can match. */
+#define MD5SIG_LEN 20
+static const unsigned char md5sig_option[MD5SIG_LEN] = {
+    0x01, 0x01, 0x13, 0x12,
+    0xA5, 0x5A, 0xC3, 0x3C, 0x96, 0x69, 0xF0, 0x0F, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF1
+};
 
 static const unsigned char fake_http_request[] = "GET / HTTP/1.1\r\nHost: www.w3.org\r\n"
                                                  "User-Agent: curl/7.65.3\r\nAccept: */*\r\n"
@@ -152,6 +160,7 @@ static int send_fake_data(const HANDLE w_filter,
                           const BYTE set_ttl,
                           const BYTE set_checksum,
                           const BYTE set_seq,
+                          const BYTE set_md5,
                           const struct fake_t *fake_data
                          ) {
     char packet_fake[MAX_PACKET_SIZE];
@@ -159,6 +168,7 @@ static int send_fake_data(const HANDLE w_filter,
     PVOID packet_data;
     UINT packet_dataLen;
     UINT packetLen_new;
+    UINT extra = 0;
     PWINDIVERT_IPHDR ppIpHdr;
     PWINDIVERT_IPV6HDR ppIpV6Hdr;
     PWINDIVERT_TCPHDR ppTcpHdr;
@@ -190,16 +200,26 @@ static int send_fake_data(const HANDLE w_filter,
             return 1;
     }
 
-    if (packetLen + fake_request_size + 1 > MAX_PACKET_SIZE)
+    /* The option block goes at the end of the TCP header, in front of the data. */
+    if (set_md5) {
+        if ((UINT)ppTcpHdr->HdrLength * 4 + MD5SIG_LEN > 60)
+            return 3;
+        extra = MD5SIG_LEN;
+    }
+    if (packetLen + fake_request_size + extra + 1 > MAX_PACKET_SIZE)
         return 2;
 
-    memcpy(packet_data, fake_request_data, fake_request_size);
-    packetLen_new = packetLen - packet_dataLen + fake_request_size;
+    if (extra) {
+        memcpy(packet_data, md5sig_option, MD5SIG_LEN);
+        ppTcpHdr->HdrLength = (UINT16)(ppTcpHdr->HdrLength + MD5SIG_LEN / 4);
+    }
+    memcpy((char *)packet_data + extra, fake_request_data, fake_request_size);
+    packetLen_new = packetLen - packet_dataLen + extra + fake_request_size;
 
     if (!is_ipv6) {
         ppIpHdr->Length = htons(
             ntohs(ppIpHdr->Length) -
-            packet_dataLen + fake_request_size
+            packet_dataLen + extra + fake_request_size
         );
 
         if (set_ttl)
@@ -208,7 +228,7 @@ static int send_fake_data(const HANDLE w_filter,
     else {
         ppIpV6Hdr->Length = htons(
             ntohs(ppIpV6Hdr->Length) -
-            packet_dataLen + fake_request_size
+            packet_dataLen + extra + fake_request_size
         );
 
         if (set_ttl)
@@ -256,19 +276,25 @@ static int send_fake_request(const HANDLE w_filter,
     if (set_ttl) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          set_ttl, FALSE, FALSE,
+                          set_ttl, FALSE, FALSE, FALSE,
                           fake_data);
     }
     if (set_checksum) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          FALSE, set_checksum, FALSE,
+                          FALSE, set_checksum, FALSE, FALSE,
                           fake_data);
     }
     if (set_seq) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          FALSE, FALSE, set_seq,
+                          FALSE, FALSE, set_seq, FALSE,
+                          fake_data);
+    }
+    if (fake_md5sig) {
+        send_fake_data(w_filter, addr, pkt, packetLen,
+                          is_ipv6, is_https,
+                          FALSE, FALSE, FALSE, TRUE,
                           fake_data);
     }
     return 0;

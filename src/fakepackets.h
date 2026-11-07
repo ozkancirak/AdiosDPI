@@ -1,5 +1,7 @@
 extern int fakes_count;
 extern int fakes_resend;
+/* 1: send one more fake that carries a TCP MD5 signature option with a wrong hash (--md5sig). */
+extern int fake_md5sig;
 int send_fake_http_request(const HANDLE w_filter,
                                   const PWINDIVERT_ADDRESS addr,
                                   const char *pkt,
