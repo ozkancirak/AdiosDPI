@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -113,3 +114,34 @@ jobs:
           echo "$WINDIVERT_SHA256  $WINDIVERT_NAME" | sha256sum -c
           7z x -y "$WINDIVERT_NAME" > /dev/null
           WINDIVERT="$PWD/$WINDIVERT_BASENAME" sh tests/run.sh
+
+  # A tag v* makes a draft release with the two zips and their checksums. The notes are written by hand
+  # and the draft is published by hand. A tag with a dash (v0.1.0-rc.1) is marked pre-release.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # The tag must match the version inside the program, which the window and -h show.
+      - name: Check version
+        run: |
+          v=$(sed -n 's/^#define ADIOSDPI_VERSION "\(.*\)"/\1/p' src/adiosdpi.c)
+          [ "$v" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME does not match version $v"; exit 1; }
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: adiosdpi-zip
+          path: zip
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          (cd zip && sha256sum *.zip > SHA256SUMS.txt)
+          pre=; case "$GITHUB_REF_NAME" in *-*) pre=--prerelease;; esac
+          gh release create "$GITHUB_REF_NAME" zip/* --draft $pre --title "AdiosDPI $GITHUB_REF_NAME" --notes "Notes follow."
