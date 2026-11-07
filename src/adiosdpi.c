@@ -1667,6 +1667,7 @@ int main(int argc, char *argv[]) {
         if (reasm_next(packet_buf, sizeof(packet_buf), &packetLen, &addr, &reasm)) {
             recv_failures = 0;
             have_packet = 1;
+            packet = packet_buf;        /* the batch of the last round is gone */
         }
         else {
             addr_len = sizeof(batch_addrs);
@@ -1694,15 +1695,19 @@ int main(int argc, char *argv[]) {
 
         for (;;) {
             /* A joined ClientHello goes out in order, before the rest of the batch. */
-            if (!have_packet &&
-                !reasm_next(packet_buf, sizeof(packet_buf), &packetLen, &addr, &reasm)) {
-                if (batch_idx >= batch_count || batch_rem == 0)
-                    break;
-                packetLen = batch_packet_len(batch_pkt, batch_rem);
-                packet = batch_pkt;
-                addr = batch_addrs[batch_idx++];
-                batch_pkt += packetLen;
-                batch_rem -= packetLen;
+            if (!have_packet) {
+                if (reasm_next(packet_buf, sizeof(packet_buf), &packetLen, &addr, &reasm)) {
+                    packet = packet_buf;    /* it is in packet_buf, not where the last batch packet was */
+                }
+                else {
+                    if (batch_idx >= batch_count || batch_rem == 0)
+                        break;
+                    packetLen = batch_packet_len(batch_pkt, batch_rem);
+                    packet = batch_pkt;
+                    addr = batch_addrs[batch_idx++];
+                    batch_pkt += packetLen;
+                    batch_rem -= packetLen;
+                }
             }
             have_packet = 0;
 
