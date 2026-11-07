@@ -193,6 +193,8 @@ static const char *http_methods[] = {
 #define OPT_BLACKLIST_EXCLUDE 1001
 #define OPT_SPLIT_POS 1002
 #define OPT_MD5SIG 1003
+#define OPT_SEQOVL 1004
+#define SEQOVL_MAX 1000
 
 static struct option long_options[] = {
     {"port",        required_argument, 0,  'z' },
@@ -200,6 +202,7 @@ static struct option long_options[] = {
     {"blacklist-exclude", required_argument, 0,  OPT_BLACKLIST_EXCLUDE },
     {"split-pos",   required_argument, 0,  OPT_SPLIT_POS },
     {"md5sig",      no_argument,       0,  OPT_MD5SIG },
+    {"seqovl",      required_argument, 0,  OPT_SEQOVL },
     {"dns-addr",    required_argument, 0,  'd' },
     {"dns-port",    required_argument, 0,  'g' },
     {"dnsv6-addr",  required_argument, 0,  '!' },
@@ -790,36 +793,48 @@ static void send_native_fragment(HANDLE w_filter, WINDIVERT_ADDRESS addr,
 /*
  * Sends the data of a packet in count + 1 pieces, cut at cuts[0..count-1]: in order, or the last
  * piece first. Every piece keeps the headers; its length and sequence number are made to fit.
+ *
+ * The first piece can start seqovl bytes early: its sequence number is lowered by seqovl and the
+ * bytes in front of the data are zeros. The server has those sequence numbers already, throws the
+ * bytes away and keeps the data; a DPI box that does not do the same reads a different stream.
+ *
+ * The pieces are built in a buffer of their own: the packet may sit in the middle of a batch, and
+ * a piece with extra bytes must not run over the next packet.
  */
 static void send_split(HANDLE w_filter, WINDIVERT_ADDRESS addr,
                        char *packet, UINT packetLen, PVOID packet_data, UINT packet_dataLen,
                        int packet_v4, int packet_v6,
                        PWINDIVERT_IPHDR ppIpHdr, PWINDIVERT_IPV6HDR ppIpV6Hdr, PWINDIVERT_TCPHDR ppTcpHdr,
-                       const unsigned int *cuts, int count, int reverse) {
-    char packet_bak[MAX_PACKET_SIZE];
+                       const unsigned int *cuts, int count, unsigned int seqovl, int reverse) {
+    char work[MAX_PACKET_SIZE];
     unsigned int bounds[SPLIT_MAX + 2];
+    UINT data_off = (UINT)((char *)packet_data - packet), tcp_off = (UINT)((char *)ppTcpHdr - packet);
+    UINT ip_length = ntohs(packet_v4 ? ppIpHdr->Length : ppIpV6Hdr->Length);
     int k;
 
-    memcpy(packet_bak, packet, packetLen);
     bounds[0] = 0;
     memcpy(bounds + 1, cuts, (size_t)count * sizeof(*cuts));
     bounds[count + 1] = packet_dataLen;
     for (k = 0; k <= count; k++) {
         int piece = reverse ? count - k : k;
         unsigned int from = bounds[piece], len = bounds[piece + 1] - from;
-        UINT piece_len = packetLen - packet_dataLen + len;
+        unsigned int pad = (from == 0 && data_off + seqovl + len <= MAX_PACKET_SIZE) ? seqovl : 0;
+        UINT piece_len = data_off + pad + len;
+        PWINDIVERT_TCPHDR tcp = (PWINDIVERT_TCPHDR)(work + tcp_off);
 
-        memmove(packet_data, (char *)packet_data + from, len);
+        (void)packetLen;
+        memcpy(work, packet, data_off);
+        memset(work + data_off, 0, pad);
+        memcpy(work + data_off + pad, (char *)packet_data + from, len);
         if (packet_v4)
-            ppIpHdr->Length = htons((UINT16)(ntohs(ppIpHdr->Length) - packet_dataLen + len));
+            ((PWINDIVERT_IPHDR)work)->Length = htons((UINT16)(ip_length - packet_dataLen + pad + len));
         else if (packet_v6)
-            ppIpV6Hdr->Length = htons((UINT16)(ntohs(ppIpV6Hdr->Length) - packet_dataLen + len));
-        ppTcpHdr->SeqNum = htonl(ntohl(ppTcpHdr->SeqNum) + from);
+            ((PWINDIVERT_IPV6HDR)work)->Length = htons((UINT16)(ip_length - packet_dataLen + pad + len));
+        tcp->SeqNum = htonl(ntohl(ppTcpHdr->SeqNum) + from - pad);
         addr.IPChecksum = 0;
         addr.TCPChecksum = 0;
-        WinDivertHelperCalcChecksums(packet, piece_len, &addr, 0);
-        queue_tx(w_filter, packet, piece_len, &addr);
-        memcpy(packet, packet_bak, packetLen);          /* the next piece starts from the whole packet again */
+        WinDivertHelperCalcChecksums(work, piece_len, &addr, 0);
+        queue_tx(w_filter, work, piece_len, &addr);
     }
 }
 
@@ -980,6 +995,7 @@ int main(int argc, char *argv[]) {
     unsigned int desync_cutoff = 0;
     struct split_spec split_spec;
     int do_split_pos = 0;
+    unsigned int split_seqovl = 0;
     unsigned short max_payload_size = 0;
     BYTE should_send_fake = 0;
     BYTE ttl_of_fake_packet = 0;
@@ -1425,6 +1441,13 @@ int main(int argc, char *argv[]) {
             case 'x': // --debug-exit
                 debug_exit = true;
                 break;
+            case OPT_SEQOVL: // --seqovl
+                split_seqovl = atousi(optarg, "--seqovl should be in range [1 - 1000]\n");
+                if (split_seqovl < 1 || split_seqovl > SEQOVL_MAX) {
+                    printf("--seqovl should be in range [1 - %d]\n", SEQOVL_MAX);
+                    exit(ERROR_DEFAULT);
+                }
+                break;
             case OPT_MD5SIG: // --md5sig
                 do_fake_packet = 1;
                 fake_md5sig = 1;
@@ -1502,6 +1525,9 @@ int main(int argc, char *argv[]) {
                 "                          option and a wrong hash: Linux servers drop it, a DPI box usually does not\n"
                 "                          look. A server that does not check the option would take the fake as data,\n"
                 "                          so use it with --blacklist or where you know it works.\n"
+                " --seqovl     <value>    with --split-pos: send the first piece <value> bytes early, with zeros in front of\n"
+                "                          the data. The server already has those sequence numbers and drops the bytes;\n"
+                "                          a DPI box that does not do the same sees another stream. 1 - 1000.\n"
                 " --split-pos   <list>     cut the first TLS packet at several places, such as 1,midsld,sniext+1.\n"
                 "                          A place is N (bytes from the start), -N (from the end), or host, endhost,\n"
                 "                          sld, endsld, midsld (middle of the second-level domain), sniext, each with\n"
@@ -1569,6 +1595,8 @@ int main(int argc, char *argv[]) {
 
     if (!do_blacklist && blackwhitelist_have_exclusions())
         puts("WARNING: --blacklist-exclude does nothing without --blacklist.");
+    if (split_seqovl && !do_split_pos)
+        puts("WARNING: --seqovl does nothing without --split-pos.");
 
     if (dns_check_domain)
         return dns_check(dns_check_domain, do_dnsv4_redirect ? dnsv4_addr : 0,
@@ -2077,7 +2105,7 @@ int main(int argc, char *argv[]) {
                                 printf("Splitting a ClientHello of %u bytes into %d pieces\n", packet_dataLen, cut_count + 1);
                             send_split(w_filter, addr, packet, packetLen, packet_data, packet_dataLen,
                                        packet_v4, packet_v6, ppIpHdr, ppIpV6Hdr, ppTcpHdr,
-                                       cuts, cut_count, do_reverse_frag);
+                                       cuts, cut_count, split_seqovl, do_reverse_frag);
                             flush_tx(w_filter);
                             continue;
                         }
