@@ -20,6 +20,7 @@
 #include "tls.h"
 #include "reasm.h"
 #include "gui.h"
+#include "splitpos.h"
 #include "quic.h"
 #include "dnsredir.h"
 #include "dnscheck.h"
@@ -190,11 +191,13 @@ static const char *http_methods[] = {
 /* Long-only options. */
 #define OPT_CUTOFF 1000
 #define OPT_BLACKLIST_EXCLUDE 1001
+#define OPT_SPLIT_POS 1002
 
 static struct option long_options[] = {
     {"port",        required_argument, 0,  'z' },
     {"cutoff",      required_argument, 0,  OPT_CUTOFF },
     {"blacklist-exclude", required_argument, 0,  OPT_BLACKLIST_EXCLUDE },
+    {"split-pos",   required_argument, 0,  OPT_SPLIT_POS },
     {"dns-addr",    required_argument, 0,  'd' },
     {"dns-port",    required_argument, 0,  'g' },
     {"dnsv6-addr",  required_argument, 0,  '!' },
@@ -783,6 +786,42 @@ static void send_native_fragment(HANDLE w_filter, WINDIVERT_ADDRESS addr,
 }
 
 /*
+ * Sends the data of a packet in count + 1 pieces, cut at cuts[0..count-1]: in order, or the last
+ * piece first. Every piece keeps the headers; its length and sequence number are made to fit.
+ */
+static void send_split(HANDLE w_filter, WINDIVERT_ADDRESS addr,
+                       char *packet, UINT packetLen, PVOID packet_data, UINT packet_dataLen,
+                       int packet_v4, int packet_v6,
+                       PWINDIVERT_IPHDR ppIpHdr, PWINDIVERT_IPV6HDR ppIpV6Hdr, PWINDIVERT_TCPHDR ppTcpHdr,
+                       const unsigned int *cuts, int count, int reverse) {
+    char packet_bak[MAX_PACKET_SIZE];
+    unsigned int bounds[SPLIT_MAX + 2];
+    int k;
+
+    memcpy(packet_bak, packet, packetLen);
+    bounds[0] = 0;
+    memcpy(bounds + 1, cuts, (size_t)count * sizeof(*cuts));
+    bounds[count + 1] = packet_dataLen;
+    for (k = 0; k <= count; k++) {
+        int piece = reverse ? count - k : k;
+        unsigned int from = bounds[piece], len = bounds[piece + 1] - from;
+        UINT piece_len = packetLen - packet_dataLen + len;
+
+        memmove(packet_data, (char *)packet_data + from, len);
+        if (packet_v4)
+            ppIpHdr->Length = htons((UINT16)(ntohs(ppIpHdr->Length) - packet_dataLen + len));
+        else if (packet_v6)
+            ppIpV6Hdr->Length = htons((UINT16)(ntohs(ppIpV6Hdr->Length) - packet_dataLen + len));
+        ppTcpHdr->SeqNum = htonl(ntohl(ppTcpHdr->SeqNum) + from);
+        addr.IPChecksum = 0;
+        addr.TCPChecksum = 0;
+        WinDivertHelperCalcChecksums(packet, piece_len, &addr, 0);
+        queue_tx(w_filter, packet, piece_len, &addr);
+        memcpy(packet, packet_bak, packetLen);          /* the next piece starts from the whole packet again */
+    }
+}
+
+/*
  * What is left to do once the filter is open. Looking through every running program takes about half
  * a second, so it runs beside the start-up instead of in front of it: the filter opens at once and the
  * warning, if any, follows.
@@ -937,6 +976,8 @@ int main(int argc, char *argv[]) {
     unsigned int https_fragment_size = 0;
     unsigned int current_fragment_size = 0;
     unsigned int desync_cutoff = 0;
+    struct split_spec split_spec;
+    int do_split_pos = 0;
     unsigned short max_payload_size = 0;
     BYTE should_send_fake = 0;
     BYTE ttl_of_fake_packet = 0;
@@ -1382,6 +1423,16 @@ int main(int argc, char *argv[]) {
             case 'x': // --debug-exit
                 debug_exit = true;
                 break;
+            case OPT_SPLIT_POS: // --split-pos
+                if (!split_parse(optarg, &split_spec)) {
+                    printf("Can't read the --split-pos list \"%s\" (at most %d places, such as 1,midsld,sniext+1).\n",
+                           optarg, SPLIT_MAX);
+                    exit(ERROR_DEFAULT);
+                }
+                /* It needs the same things --native-frag does, and the server name for the name markers. */
+                do_split_pos = do_fragment_https = do_native_frag = 1;
+                do_fragment_http_persistent = do_fragment_http_persistent_nowait = 1;
+                break;
             case OPT_CUTOFF: // --cutoff
                 desync_cutoff = atousi(optarg, "Cutoff value should be in range [0 - 0xFFFF]\n");
                 break;
@@ -1441,6 +1492,10 @@ int main(int argc, char *argv[]) {
                 " --frag-by-sni            if SNI is detected in TLS packet, fragment the packet right before SNI value.\n"
                 " --frag-in-sni            same, but fragment in the middle of the SNI value (needs --native-frag,\n"
                 "                          which the modes -5 to -9 have).\n"
+                " --split-pos   <list>     cut the first TLS packet at several places, such as 1,midsld,sniext+1.\n"
+                "                          A place is N (bytes from the start), -N (from the end), or host, endhost,\n"
+                "                          sld, endsld, midsld (middle of the second-level domain), sniext, each with\n"
+                "                          an optional +N or -N. Up to 8. With --reverse-frag the last piece goes first.\n"
                 , stdout);
                 puts(
                 " --set-ttl     <value>    activate Fake Request Mode and send it with supplied TTL value.\n"
@@ -1820,7 +1875,7 @@ int main(int argc, char *argv[]) {
                     */
                     if (tls_is_handshake_record(packet_data, packet_dataLen))
                     {
-                        if (do_blacklist || do_fragment_by_sni) {
+                        if (do_blacklist || do_fragment_by_sni || do_split_pos) {
                             if (reasm.known) {
                                 /* A held back ClientHello: the name was looked up in both of its segments. */
                                 sni_ok = reasm.sni_ok;
@@ -2002,6 +2057,21 @@ int main(int argc, char *argv[]) {
                 */
                 if (should_reinject && should_recalc_checksum && do_native_frag)
                 {
+                    if (do_split_pos && ppTcpHdr->DstPort != htons(80)) {
+                        unsigned int cuts[SPLIT_MAX];
+                        int cut_count = split_resolve(&split_spec, packet_data, packet_dataLen,
+                                                      (sni_ok && !reasm.known) ? host_addr : NULL, host_len, cuts);
+
+                        if (cut_count > 0) {
+                            if (do_tcp_verb)
+                                printf("Splitting a ClientHello of %u bytes into %d pieces\n", packet_dataLen, cut_count + 1);
+                            send_split(w_filter, addr, packet, packetLen, packet_data, packet_dataLen,
+                                       packet_v4, packet_v6, ppIpHdr, ppIpV6Hdr, ppTcpHdr,
+                                       cuts, cut_count, do_reverse_frag);
+                            flush_tx(w_filter);
+                            continue;
+                        }
+                    }
                     current_fragment_size = 0;
                     if (do_fragment_http && ppTcpHdr->DstPort == htons(80)) {
                         current_fragment_size = http_fragment_size;
