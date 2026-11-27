@@ -34,7 +34,7 @@
 // My mingw installation does not load inet_pton definition for some reason
 WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pAddr);
 
-#define ADIOSDPI_VERSION "v0.1.0-dev"
+#define ADIOSDPI_VERSION "v0.1.0-rc.1"
 
 #define die() do { sleep(20); exit(EXIT_FAILURE); } while (0)
 
