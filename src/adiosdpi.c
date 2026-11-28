@@ -36,7 +36,7 @@ WINSOCK_API_LINKAGE INT WSAAPI inet_pton(INT Family, LPCSTR pStringBuf, PVOID pA
 
 #define ADIOSDPI_VERSION "v0.1.0-rc.1"
 
-#define die() do { sleep(20); exit(EXIT_FAILURE); } while (0)
+#define die() exit(EXIT_FAILURE)
 
 #define MAX_FILTERS 4
 
