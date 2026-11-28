@@ -357,6 +357,7 @@ static void add_ip_id_str(int id) {
     newstr = must(repl_str(filter_passive_string, IPID_TEMPLATE, addfilter));
     free(filter_passive_string);
     filter_passive_string = newstr;
+    free(addfilter);
 }
 
 static void add_maxpayloadsize_str(unsigned short maxpayload) {
@@ -373,6 +374,7 @@ static void add_maxpayloadsize_str(unsigned short maxpayload) {
     newstr = must(repl_str(filter_string, MAXPAYLOADSIZE_TEMPLATE, addfilter));
     free(filter_string);
     filter_string = newstr;
+    free(addfilter);
 }
 
 /* Which parts of the filter the chosen options need. */
