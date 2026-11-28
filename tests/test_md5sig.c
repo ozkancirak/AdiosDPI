@@ -64,9 +64,28 @@ static void run(int v6, int opt_bytes) {
         CHECK(nsent == 0);
     }
 }
+/* --fake-ts: the fake has the timestamp 600000 back; no timestamp in the packet means no fake */
+static void ts(int v6, int opt_bytes) {
+    char pkt[2000]; WINDIVERT_ADDRESS addr; memset(&addr, 0, sizeof(addr));
+    UINT total = build(pkt, v6, 300, opt_bytes), hl = v6 ? 40 : 20;
+    PWINDIVERT_TCPHDR tcp = NULL; PVOID pl; UINT pn, tsval = htonl(5000000), now;
+    if (opt_bytes == 12) { memcpy(pkt + hl + 20 + 4, &tsval, 4); WinDivertHelperCalcChecksums(pkt, total, &addr, 0); }
+    nsent = 0; fake_ts = 1; fake_md5sig = 0;
+    send_fake_https_request(NULL, &addr, pkt, total, v6, 0, 0, 0);
+    if (opt_bytes != 12) { CHECK(nsent == 0); fake_ts = 0; return; }
+    CHECK(nsent == 1);
+    CHECK(WinDivertHelperParsePacket(sent[0], sent_len[0], NULL, NULL, NULL, NULL, NULL, &tcp, NULL, &pl, &pn, NULL, NULL));
+    memcpy(&now, (char *)tcp + 20 + 4, 4);
+    CHECK(ntohl(now) == 5000000 - 600000);
+    CHECK(tcp->HdrLength * 4u == 32 && pn > 300 && ((unsigned char *)pl)[0] == 0x16);
+    { char again[2000]; WINDIVERT_ADDRESS a2; memset(&a2, 0, sizeof(a2)); memcpy(again, sent[0], sent_len[0]);
+      WinDivertHelperCalcChecksums(again, sent_len[0], &a2, 0); CHECK(memcmp(again, sent[0], sent_len[0]) == 0); }
+    printf("%s: fake-ts sets the timestamp back to %lu\n", v6 ? "IPv6" : "IPv4", (unsigned long)ntohl(now));
+    fake_ts = 0;
+}
 int main(void) {
     int v;
-    for (v = 0; v < 2; v++) { run(v, 0); run(v, 12); }
+    for (v = 0; v < 2; v++) { run(v, 0); run(v, 12); ts(v, 0); ts(v, 12); }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return fails != 0;
 }

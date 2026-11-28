@@ -19,6 +19,10 @@ static struct fake_t *fakes[30] = {0};
 int fakes_count = 0;
 int fakes_resend = 1;
 int fake_md5sig = 0;
+int fake_ts = 0;
+
+/* How far back the timestamp of a --fake-ts fake is set. A server that checks timestamps (PAWS) drops it. */
+#define FAKE_TS_DELTA 600000
 
 /* TCP option block of a fake: two NOPs, then option 19 (MD5 signature) with a hash nobody can match. */
 #define MD5SIG_LEN 20
@@ -151,6 +155,24 @@ static const unsigned char fake_clienthello_part1[] = { // 523 bytes
 // JA3 Fullstring: 771,4865-4867-4866-49195-49199-52393-52392-49196-49200-49162-49161-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-34-51-43-13-45-28-65037,29-23-24-25-256-257,0
 // JA3: b5001237acdf006056b409cc433726b0
 
+/* The TSval field of the TCP timestamp option, or NULL when the header has none. */
+static unsigned char *tcp_tsval(PWINDIVERT_TCPHDR tcp) {
+    unsigned char *o = (unsigned char *)tcp + 20, *end = (unsigned char *)tcp + tcp->HdrLength * 4;
+
+    while (o < end && *o) {
+        if (*o == 1) {          /* NOP */
+            o++;
+            continue;
+        }
+        if (o + 1 >= end || o[1] < 2 || o + o[1] > end)
+            return NULL;
+        if (*o == 8 && o[1] == 10)
+            return o + 2;
+        o += o[1];
+    }
+    return NULL;
+}
+
 static int send_fake_data(const HANDLE w_filter,
                           const PWINDIVERT_ADDRESS addr,
                           const char *pkt,
@@ -161,6 +183,7 @@ static int send_fake_data(const HANDLE w_filter,
                           const BYTE set_checksum,
                           const BYTE set_seq,
                           const BYTE set_md5,
+                          const BYTE set_ts,
                           const struct fake_t *fake_data
                          ) {
     char packet_fake[MAX_PACKET_SIZE];
@@ -198,6 +221,18 @@ static int send_fake_data(const HANDLE w_filter,
             &ppIpV6Hdr, NULL, NULL, NULL, &ppTcpHdr, NULL, &packet_data, &packet_dataLen,
             NULL, NULL))
             return 1;
+    }
+
+    /* No timestamp to move back: the server would take the fake as data, so there is no fake. */
+    if (set_ts) {
+        unsigned char *tsval = tcp_tsval(ppTcpHdr);
+        UINT32 value;
+
+        if (!tsval)
+            return 3;
+        memcpy(&value, tsval, sizeof(value));
+        value = htonl(ntohl(value) - FAKE_TS_DELTA);
+        memcpy(tsval, &value, sizeof(value));
     }
 
     /* The option block goes at the end of the TCP header, in front of the data. */
@@ -276,25 +311,31 @@ static int send_fake_request(const HANDLE w_filter,
     if (set_ttl) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          set_ttl, FALSE, FALSE, FALSE,
+                          set_ttl, FALSE, FALSE, FALSE, FALSE,
                           fake_data);
     }
     if (set_checksum) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          FALSE, set_checksum, FALSE, FALSE,
+                          FALSE, set_checksum, FALSE, FALSE, FALSE,
                           fake_data);
     }
     if (set_seq) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          FALSE, FALSE, set_seq, FALSE,
+                          FALSE, FALSE, set_seq, FALSE, FALSE,
                           fake_data);
     }
     if (fake_md5sig) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          FALSE, FALSE, FALSE, TRUE,
+                          FALSE, FALSE, FALSE, TRUE, FALSE,
+                          fake_data);
+    }
+    if (fake_ts) {
+        send_fake_data(w_filter, addr, pkt, packetLen,
+                          is_ipv6, is_https,
+                          FALSE, FALSE, FALSE, FALSE, TRUE,
                           fake_data);
     }
     return 0;
