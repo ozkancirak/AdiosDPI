@@ -195,6 +195,7 @@ static const char *http_methods[] = {
 #define OPT_SPLIT_POS 1002
 #define OPT_MD5SIG 1003
 #define OPT_SEQOVL 1004
+#define OPT_TLSREC 1005
 #define SEQOVL_MAX 1000
 
 static struct option long_options[] = {
@@ -204,6 +205,7 @@ static struct option long_options[] = {
     {"split-pos",   required_argument, 0,  OPT_SPLIT_POS },
     {"md5sig",      no_argument,       0,  OPT_MD5SIG },
     {"seqovl",      required_argument, 0,  OPT_SEQOVL },
+    {"tlsrec",      required_argument, 0,  OPT_TLSREC },
     {"dns-addr",    required_argument, 0,  'd' },
     {"dns-port",    required_argument, 0,  'g' },
     {"dnsv6-addr",  required_argument, 0,  '!' },
@@ -899,6 +901,8 @@ int main(int argc, char *argv[]) {
     unsigned int desync_cutoff = 0;
     struct split_spec split_spec;
     int do_split_pos = 0;
+    struct split_spec tlsrec_spec;
+    int do_tlsrec = 0;
     unsigned int split_seqovl = 0;
     unsigned short max_payload_size = 0;
     BYTE should_send_fake = 0;
@@ -1366,6 +1370,14 @@ int main(int argc, char *argv[]) {
                 do_split_pos = do_fragment_https = do_native_frag = 1;
                 do_fragment_http_persistent = do_fragment_http_persistent_nowait = 1;
                 break;
+            case OPT_TLSREC: // --tlsrec
+                if (!split_parse(optarg, &tlsrec_spec)) {
+                    printf("Can't read the --tlsrec place \"%s\" (such as midsld or host+1).\n", optarg);
+                    exit(ERROR_DEFAULT);
+                }
+                do_tlsrec = do_fragment_https = do_native_frag = 1;
+                do_fragment_http_persistent = do_fragment_http_persistent_nowait = 1;
+                break;
             case OPT_CUTOFF: // --cutoff
                 desync_cutoff = atousi(optarg, "Cutoff value should be in range [0 - 0xFFFF]\n");
                 break;
@@ -1432,6 +1444,9 @@ int main(int argc, char *argv[]) {
                 " --seqovl     <value>    with --split-pos: send the first piece <value> bytes early, with zeros in front of\n"
                 "                          the data. The server already has those sequence numbers and drops the bytes;\n"
                 "                          a DPI box that does not do the same sees another stream. 1 - 1000.\n"
+                " --tlsrec     <place>    cut the TLS record of the first packet in two records at this place (the same\n"
+                "                          places as --split-pos, 6 or more bytes in); one packet 5 bytes longer. A DPI box\n"
+                "                          that joins TCP segments but not records does not see the server name.\n"
                 " --split-pos   <list>     cut the first TLS packet at several places, such as 1,midsld,sniext+1.\n"
                 "                          A place is N (bytes from the start), -N (from the end), or host, endhost,\n"
                 "                          sld, endsld, midsld (middle of the second-level domain), sniext, each with\n"
@@ -1501,6 +1516,8 @@ int main(int argc, char *argv[]) {
         puts("WARNING: --blacklist-exclude does nothing without --blacklist.");
     if (split_seqovl && !do_split_pos)
         puts("WARNING: --seqovl does nothing without --split-pos.");
+    if (do_tlsrec && do_split_pos)
+        puts("WARNING: --tlsrec and --split-pos do not work together yet, --split-pos is used.");
 
     if (dns_check_domain)
         return dns_check(dns_check_domain, do_dnsv4_redirect ? dnsv4_addr : 0,
@@ -1817,7 +1834,7 @@ int main(int argc, char *argv[]) {
                     */
                     if (tls_is_handshake_record(packet_data, packet_dataLen))
                     {
-                        if (do_blacklist || do_fragment_by_sni || do_split_pos) {
+                        if (do_blacklist || do_fragment_by_sni || do_split_pos || do_tlsrec) {
                             if (reasm.known) {
                                 /* A held back ClientHello: the name was looked up in both of its segments. */
                                 sni_ok = reasm.sni_ok;
@@ -1999,6 +2016,30 @@ int main(int argc, char *argv[]) {
                 */
                 if (should_reinject && should_recalc_checksum && do_native_frag)
                 {
+                    if (do_tlsrec && !do_split_pos && ppTcpHdr->DstPort != htons(80)) {
+                        static char rec_packet[MAX_PACKET_SIZE];
+                        unsigned int rec_cuts[SPLIT_MAX];
+                        int rec_count = split_resolve(&tlsrec_spec, packet_data, packet_dataLen,
+                                                      (sni_ok && !reasm.known) ? host_addr : NULL, host_len, rec_cuts);
+                        UINT rec_len = 0;
+                        int r;
+
+                        /* The first place that is inside the record body: 6 bytes in or more. */
+                        for (r = 0; r < rec_count && !rec_len; r++)
+                            rec_len = tls_record_split(rec_packet, packet, packetLen,
+                                                       (UINT)((char *)packet_data - packet), packet_dataLen,
+                                                       packet_v4, rec_cuts[r]);
+                        if (rec_len) {
+                            if (do_tcp_verb)
+                                printf("Cutting the TLS record of a ClientHello of %u bytes in two\n", packet_dataLen);
+                            addr.IPChecksum = 0;
+                            addr.TCPChecksum = 0;
+                            WinDivertHelperCalcChecksums(rec_packet, rec_len, &addr, 0);
+                            queue_tx(w_filter, rec_packet, rec_len, &addr);
+                            flush_tx(w_filter);
+                            continue;
+                        }
+                    }
                     if (do_split_pos && ppTcpHdr->DstPort != htons(80)) {
                         unsigned int cuts[SPLIT_MAX];
                         int cut_count = split_resolve(&split_spec, packet_data, packet_dataLen,

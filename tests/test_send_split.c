@@ -95,8 +95,35 @@ static void run(int v6, const char *list, int reverse, const char *host_name, un
     printf("\n");
 }
 
+/* one TLS record cut in two: lengths, bytes and checksums of the new packet */
+static void tlsrec(int v6, unsigned cut) {
+    static char pkt[2000], out[2000], again[2000];
+    char data[517]; UINT i, total, n, hl = v6 ? 40 : 20, d = hl + 20;
+    WINDIVERT_ADDRESS addr; memset(&addr, 0, sizeof(addr));
+    for (i = 0; i < sizeof(data); i++) data[i] = (char)(i * 5 + 1);
+    data[0] = 0x16; data[1] = 3; data[2] = 1; data[3] = 0x02; data[4] = 0x00;       /* one record of 512 bytes */
+    total = build(pkt, v6, sizeof(data), 1000, data);
+    n = tls_record_split(out, pkt, total, d, sizeof(data), !v6, cut);
+    CHECK(n == total + 5);
+    CHECK(tls_record_split(out, pkt, total, d, sizeof(data), !v6, 5) == 0);          /* inside the header: no */
+    CHECK(tls_record_split(out, pkt, total, d, sizeof(data), !v6, sizeof(data)) == 0);
+    CHECK(((unsigned char)out[d + 3] << 8 | (unsigned char)out[d + 4]) == cut - 5);   /* first record */
+    CHECK(((unsigned char)out[d + cut + 3] << 8 | (unsigned char)out[d + cut + 4]) == 512 - (cut - 5));
+    CHECK(memcmp(out + d + 5, data + 5, cut - 5) == 0 && memcmp(out + d + cut + 5, data + cut, sizeof(data) - cut) == 0);
+    CHECK(memcmp(out + d + cut, data, 3) == 0);                                       /* same type and version */
+    WinDivertHelperCalcChecksums(out, n, &addr, 0);
+    CHECK(ntohs(v6 ? ((PWINDIVERT_IPV6HDR)out)->Length : ((PWINDIVERT_IPHDR)out)->Length) == n - (v6 ? 40 : 0));
+    memcpy(again, out, n); WinDivertHelperCalcChecksums(again, n, &addr, 0);
+    CHECK(memcmp(again, out, n) == 0);
+    printf("%s  tlsrec at %u ok\n", v6 ? "IPv6" : "IPv4", cut);
+}
+
 int main(void) {
     int v;
+    for (v = 0; v < 2; v++) {
+        tlsrec(v, 6);
+        tlsrec(v, 130);
+    }
     for (v = 0; v < 2; v++) {
         run(v, "1,midsld", 0, "cdn.discordapp.com", 0);
         run(v, "1,midsld", 1, "cdn.discordapp.com", 0);

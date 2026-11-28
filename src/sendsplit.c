@@ -123,3 +123,32 @@ void send_split(HANDLE w_filter, WINDIVERT_ADDRESS addr,
         queue_tx(w_filter, work, piece_len, &addr);
     }
 }
+
+/* ponytail: 1500 is the usual Ethernet limit; a path with a smaller MTU would need the size of its MSS. */
+#define TLSREC_MAX_PACKET 1500
+
+UINT tls_record_split(char *out, const char *packet, UINT packetLen, UINT data_off,
+                      UINT data_len, int packet_v4, unsigned int cut) {
+    const unsigned char *data = (const unsigned char *)packet + data_off;
+    UINT rec_len, ip_length;   /* the Length field: the whole packet in IPv4, after the 40 byte header in IPv6 */
+
+    if (data_len < 7 || data[0] != 0x16 || cut < 6 || cut >= data_len)
+        return 0;
+    rec_len = (UINT)(data[3] << 8 | data[4]);
+    ip_length = ntohs(packet_v4 ? ((PWINDIVERT_IPHDR)packet)->Length : ((PWINDIVERT_IPV6HDR)packet)->Length);
+    if (rec_len + 5 != data_len || packetLen + 5 > TLSREC_MAX_PACKET)
+        return 0;
+
+    memcpy(out, packet, data_off + cut);
+    out[data_off + 3] = (char)((cut - 5) >> 8);
+    out[data_off + 4] = (char)(cut - 5);
+    memcpy(out + data_off + cut, data, 3);
+    out[data_off + cut + 3] = (char)((rec_len - (cut - 5)) >> 8);
+    out[data_off + cut + 4] = (char)(rec_len - (cut - 5));
+    memcpy(out + data_off + cut + 5, data + cut, data_len - cut);
+    if (packet_v4)
+        ((PWINDIVERT_IPHDR)out)->Length = htons((UINT16)(ip_length + 5));
+    else
+        ((PWINDIVERT_IPV6HDR)out)->Length = htons((UINT16)(ip_length + 5));
+    return packetLen + 5;
+}
