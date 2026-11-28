@@ -4,17 +4,17 @@
 #include <string.h>
 #include "windivert.h"
 #include "splitpos.h"
+#include "sendsplit.h"
 #define MAX_PACKET_SIZE 9016
 
 static char pieces[16][2000];
 static UINT piece_len[16];
 static int npieces;
-static void queue_tx(HANDLE w, const char *p, UINT len, const WINDIVERT_ADDRESS *a) {
+void queue_tx(HANDLE w, const char *p, UINT len, const WINDIVERT_ADDRESS *a) {
     (void)w; (void)a;
     memcpy(pieces[npieces], p, len);
     piece_len[npieces++] = len;
 }
-#include "send_split.inc"   /* cut out of ../src/adiosdpi.c by run.sh, so the test runs the real code */
 
 static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
