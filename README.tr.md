@@ -26,7 +26,7 @@ adiosdpi.exe --install --preset dns   servis olarak çalıştırır (--remove, -
 adiosdpi.exe -h                       tüm seçenekler
 ```
 
-Başka DNS sunucusu için `--dns-addr`, `--dns-port` ve `--dns-backup`. `--blacklist <dosya>` hileleri yalnızca listedeki sitelere uygular (`lists/blocked-tr.txt` bir başlangıçtır). İlk paketi istediğiniz yerden kesmek için `--split-pos 1,midsld,sniext+1` (ayrıca `host`, `endhost`, `sld`, `endsld`, `-N`). `--seqovl N` ilk parçayı N bayt erken başlatır, `--md5sig` yanlış TCP MD5 imzalı bir sahte paket daha gönderir. Pencere uygulaması olduğu için terminalde komut istemi, çıktı yazılmadan önce geri döner.
+Başka DNS sunucusu için `--dns-addr`, `--dns-port` ve `--dns-backup`. `--blacklist <dosya>` hileleri yalnızca listedeki sitelere uygular (`lists/blocked-tr.txt` bir başlangıçtır). İlk paketi istediğiniz yerden kesmek için `--split-pos 1,midsld,sniext+1` (ayrıca `host`, `endhost`, `sld`, `endsld`, `-N`). `--seqovl N` ilk parçayı N bayt erken başlatır, `--md5sig` yanlış TCP MD5 imzalı bir sahte paket daha gönderir, `--fake-noack` ACK bayrağı olmayan, `--fake-ts` eski TCP zaman damgalı bir tane (Windows varsayılan olarak zaman damgası göndermez, orada çoğunlukla bir şey yapmaz). `--tlsrec <yer>` ilk paketin TLS kaydını `--split-pos` ile aynı yerlerden iki kayda böler (henüz onunla birlikte çalışmaz). Sunucu bu sahteleri atar, DPI çoğu zaman atmaz; ama bazı güvenlik duvarları da atar: siteler açılmazsa kapatın. Pencere uygulaması olduğu için terminalde komut istemi, çıktı yazılmadan önce geri döner.
 
 Kipler:
 
