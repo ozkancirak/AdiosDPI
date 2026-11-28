@@ -83,9 +83,27 @@ static void ts(int v6, int opt_bytes) {
     printf("%s: fake-ts sets the timestamp back to %lu\n", v6 ? "IPv6" : "IPv4", (unsigned long)ntohl(now));
     fake_ts = 0;
 }
+/* --fake-noack: the fake has data and no ACK flag; the rest of the packet stays as it was */
+static void noack(int v6) {
+    char pkt[2000]; WINDIVERT_ADDRESS addr; memset(&addr, 0, sizeof(addr));
+    UINT total = build(pkt, v6, 300, 0);
+    PWINDIVERT_TCPHDR tcp = NULL; PVOID pl; UINT pn;
+    nsent = 0; fake_noack = 1; fake_md5sig = 0; fake_ts = 0;
+    send_fake_https_request(NULL, &addr, pkt, total, v6, 0, 0, 0);
+    CHECK(nsent == 1);
+    CHECK(WinDivertHelperParsePacket(sent[0], sent_len[0], NULL, NULL, NULL, NULL, NULL, &tcp, NULL, &pl, &pn, NULL, NULL));
+    CHECK(tcp->Ack == 0 && tcp->Psh == 1 && ntohl(tcp->SeqNum) == 1000 && ntohl(tcp->AckNum) == 2000);
+    CHECK(pn > 300 && ((unsigned char *)pl)[0] == 0x16);
+    { char again[2000]; WINDIVERT_ADDRESS a2; memset(&a2, 0, sizeof(a2)); memcpy(again, sent[0], sent_len[0]);
+      WinDivertHelperCalcChecksums(again, sent_len[0], &a2, 0); CHECK(memcmp(again, sent[0], sent_len[0]) == 0); }
+    fake_noack = 0;
+    nsent = 0; send_fake_https_request(NULL, &addr, pkt, total, v6, 0, 0, 0);
+    CHECK(nsent == 0);                                                /* off: nothing is sent */
+    printf("%s: fake-noack sends a fake of %u bytes without the ACK flag%s", v6 ? "IPv6" : "IPv4", sent_len[0], "\n");
+}
 int main(void) {
     int v;
-    for (v = 0; v < 2; v++) { run(v, 0); run(v, 12); ts(v, 0); ts(v, 12); }
+    for (v = 0; v < 2; v++) { run(v, 0); run(v, 12); ts(v, 0); ts(v, 12); noack(v); }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return fails != 0;
 }

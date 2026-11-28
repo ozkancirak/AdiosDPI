@@ -4,6 +4,8 @@ extern int fakes_resend;
 extern int fake_md5sig;
 /* 1: send one more fake whose TCP timestamp is far in the past, so a server drops it (--fake-ts). */
 extern int fake_ts;
+/* 1: send one more fake that carries data but has the ACK flag off, which a server drops (--fake-noack). */
+extern int fake_noack;
 int send_fake_http_request(const HANDLE w_filter,
                                   const PWINDIVERT_ADDRESS addr,
                                   const char *pkt,

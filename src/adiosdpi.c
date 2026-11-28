@@ -197,6 +197,7 @@ static const char *http_methods[] = {
 #define OPT_SEQOVL 1004
 #define OPT_TLSREC 1005
 #define OPT_FAKETS 1006
+#define OPT_FAKENOACK 1007
 #define SEQOVL_MAX 1000
 
 static struct option long_options[] = {
@@ -208,6 +209,7 @@ static struct option long_options[] = {
     {"seqovl",      required_argument, 0,  OPT_SEQOVL },
     {"tlsrec",      required_argument, 0,  OPT_TLSREC },
     {"fake-ts",     no_argument,       0,  OPT_FAKETS },
+    {"fake-noack",  no_argument,       0,  OPT_FAKENOACK },
     {"dns-addr",    required_argument, 0,  'd' },
     {"dns-port",    required_argument, 0,  'g' },
     {"dnsv6-addr",  required_argument, 0,  '!' },
@@ -1366,6 +1368,10 @@ int main(int argc, char *argv[]) {
                 do_fake_packet = 1;
                 fake_ts = 1;
                 break;
+            case OPT_FAKENOACK: // --fake-noack
+                do_fake_packet = 1;
+                fake_noack = 1;
+                break;
             case OPT_SPLIT_POS: // --split-pos
                 if (!split_parse(optarg, &split_spec)) {
                     printf("Can't read the --split-pos list \"%s\" (at most %d places, such as 1,midsld,sniext+1).\n",
@@ -1450,6 +1456,9 @@ int main(int argc, char *argv[]) {
                 " --fake-ts               activate Fake Request Mode and send one more fake with the TCP timestamp set far back:\n"
                 "                          a server that checks timestamps drops it, a DPI box usually does not. It is only\n"
                 "                          sent when the real packet carries a timestamp.\n"
+                " --fake-noack            activate Fake Request Mode and send one more fake with data but without the ACK flag:\n"
+                "                          a server drops it, a DPI box usually does not look at the flag. Use it with\n"
+                "                          --blacklist or where you know it works.\n"
                 " --seqovl     <value>    with --split-pos: send the first piece <value> bytes early, with zeros in front of\n"
                 "                          the data. The server already has those sequence numbers and drops the bytes;\n"
                 "                          a DPI box that does not do the same sees another stream. 1 - 1000.\n"

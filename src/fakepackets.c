@@ -20,6 +20,7 @@ int fakes_count = 0;
 int fakes_resend = 1;
 int fake_md5sig = 0;
 int fake_ts = 0;
+int fake_noack = 0;
 
 /* How far back the timestamp of a --fake-ts fake is set. A server that checks timestamps (PAWS) drops it. */
 #define FAKE_TS_DELTA 600000
@@ -184,6 +185,7 @@ static int send_fake_data(const HANDLE w_filter,
                           const BYTE set_seq,
                           const BYTE set_md5,
                           const BYTE set_ts,
+                          const BYTE set_noack,
                           const struct fake_t *fake_data
                          ) {
     char packet_fake[MAX_PACKET_SIZE];
@@ -234,6 +236,9 @@ static int send_fake_data(const HANDLE w_filter,
         value = htonl(ntohl(value) - FAKE_TS_DELTA);
         memcpy(tsval, &value, sizeof(value));
     }
+
+    if (set_noack)
+        ppTcpHdr->Ack = 0;
 
     /* The option block goes at the end of the TCP header, in front of the data. */
     if (set_md5) {
@@ -311,31 +316,37 @@ static int send_fake_request(const HANDLE w_filter,
     if (set_ttl) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          set_ttl, FALSE, FALSE, FALSE, FALSE,
+                          set_ttl, FALSE, FALSE, FALSE, FALSE, FALSE,
                           fake_data);
     }
     if (set_checksum) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          FALSE, set_checksum, FALSE, FALSE, FALSE,
+                          FALSE, set_checksum, FALSE, FALSE, FALSE, FALSE,
                           fake_data);
     }
     if (set_seq) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          FALSE, FALSE, set_seq, FALSE, FALSE,
+                          FALSE, FALSE, set_seq, FALSE, FALSE, FALSE,
                           fake_data);
     }
     if (fake_md5sig) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          FALSE, FALSE, FALSE, TRUE, FALSE,
+                          FALSE, FALSE, FALSE, TRUE, FALSE, FALSE,
                           fake_data);
     }
     if (fake_ts) {
         send_fake_data(w_filter, addr, pkt, packetLen,
                           is_ipv6, is_https,
-                          FALSE, FALSE, FALSE, FALSE, TRUE,
+                          FALSE, FALSE, FALSE, FALSE, TRUE, FALSE,
+                          fake_data);
+    }
+    if (fake_noack) {
+        send_fake_data(w_filter, addr, pkt, packetLen,
+                          is_ipv6, is_https,
+                          FALSE, FALSE, FALSE, FALSE, FALSE, TRUE,
                           fake_data);
     }
     return 0;
