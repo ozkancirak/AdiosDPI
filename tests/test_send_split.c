@@ -118,11 +118,40 @@ static void tlsrec(int v6, unsigned cut) {
     printf("%s  tlsrec at %u ok\n", v6 ? "IPv6" : "IPv4", cut);
 }
 
+/* --tlsrec together with --split-pos: cuts in the original data, behind the record cut they move 5 bytes */
+static void tlsrec_split(int v6, int reverse) {
+    static char pkt[2000], out[2000];
+    char data[517]; UINT i, total, n, d = (v6 ? 40 : 20) + 20, cut = 130;
+    unsigned cuts[3] = {20, 130, 300}, want[4] = {0, 20, 130, 305}, got[4] = {0};   /* where the pieces start */
+    unsigned long long seen = 0;
+    WINDIVERT_ADDRESS addr; memset(&addr, 0, sizeof(addr));
+    for (i = 0; i < sizeof(data); i++) data[i] = (char)(i * 5 + 1);
+    data[0] = 0x16; data[1] = 3; data[2] = 1; data[3] = 0x02; data[4] = 0x00;
+    total = build(pkt, v6, sizeof(data), 1000, data);
+    n = tls_record_split(out, pkt, total, d, sizeof(data), !v6, cut);
+    CHECK(n == total + 5);
+    npieces = 0;
+    send_split_rec(NULL, addr, out, n, !v6, v6, cuts, 3, cut, 0, reverse);
+    CHECK(npieces == 4);
+    for (i = 0; i < (UINT)npieces; i++) {
+        PWINDIVERT_TCPHDR pt = NULL; PVOID pp; UINT pl; char copy[2000]; unsigned from, k;
+        memcpy(copy, pieces[i], piece_len[i]);
+        CHECK(WinDivertHelperParsePacket(copy, piece_len[i], NULL, NULL, NULL, NULL, NULL, &pt, NULL, &pp, &pl, NULL, NULL));
+        from = ntohl(pt->SeqNum) - 1000;
+        for (k = 0; k < 4; k++) if (from == want[k]) { got[k] = pl; seen |= 1ull << k; }
+        CHECK(memcmp(pp, out + d + from, pl) == 0);        /* the bytes are those of the two-record packet */
+    }
+    CHECK(seen == 15 && got[0] == 20 && got[1] == 110 && got[2] == 175 && got[3] == 517 + 5 - 305);
+    printf("%s  tlsrec + split-pos%s: 4 pieces from 0, 20, 130 and 305 of 522 bytes\n", v6 ? "IPv6" : "IPv4", reverse ? " (reverse)" : "");
+}
+
 int main(void) {
     int v;
     for (v = 0; v < 2; v++) {
         tlsrec(v, 6);
         tlsrec(v, 130);
+        tlsrec_split(v, 0);
+        tlsrec_split(v, 1);
     }
     for (v = 0; v < 2; v++) {
         run(v, "1,midsld", 0, "cdn.discordapp.com", 0);

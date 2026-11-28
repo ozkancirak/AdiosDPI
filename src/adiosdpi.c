@@ -1534,8 +1534,6 @@ int main(int argc, char *argv[]) {
         puts("WARNING: --blacklist-exclude does nothing without --blacklist.");
     if (split_seqovl && !do_split_pos)
         puts("WARNING: --seqovl does nothing without --split-pos.");
-    if (do_tlsrec && do_split_pos)
-        puts("WARNING: --tlsrec and --split-pos do not work together yet, --split-pos is used.");
 
     if (dns_check_domain)
         return dns_check(dns_check_domain, do_dnsv4_redirect ? dnsv4_addr : 0,
@@ -2034,29 +2032,25 @@ int main(int argc, char *argv[]) {
                 */
                 if (should_reinject && should_recalc_checksum && do_native_frag)
                 {
-                    if (do_tlsrec && !do_split_pos && ppTcpHdr->DstPort != htons(80)) {
-                        static char rec_packet[MAX_PACKET_SIZE];
+                    static char rec_packet[MAX_PACKET_SIZE];   /* the ClientHello with its record cut in two */
+                    UINT rec_len = 0, rec_cut = 0;
+
+                    if (do_tlsrec && ppTcpHdr->DstPort != htons(80)) {
                         unsigned int rec_cuts[SPLIT_MAX];
                         int rec_count = split_resolve(&tlsrec_spec, packet_data, packet_dataLen,
                                                       (sni_ok && !reasm.known) ? host_addr : NULL, host_len, rec_cuts);
-                        UINT rec_len = 0;
                         int r;
 
+                        rec_len = 0;
                         /* The first place that is inside the record body: 6 bytes in or more. */
-                        for (r = 0; r < rec_count && !rec_len; r++)
+                        for (r = 0; r < rec_count && !rec_len; r++) {
+                            rec_cut = rec_cuts[r];
                             rec_len = tls_record_split(rec_packet, packet, packetLen,
                                                        (UINT)((char *)packet_data - packet), packet_dataLen,
-                                                       packet_v4, rec_cuts[r]);
-                        if (rec_len) {
-                            if (do_tcp_verb)
-                                printf("Cutting the TLS record of a ClientHello of %u bytes in two\n", packet_dataLen);
-                            addr.IPChecksum = 0;
-                            addr.TCPChecksum = 0;
-                            WinDivertHelperCalcChecksums(rec_packet, rec_len, &addr, 0);
-                            queue_tx(w_filter, rec_packet, rec_len, &addr);
-                            flush_tx(w_filter);
-                            continue;
+                                                       packet_v4, rec_cut);
                         }
+                        if (rec_len && do_tcp_verb)
+                            printf("Cutting the TLS record of a ClientHello of %u bytes in two\n", packet_dataLen);
                     }
                     if (do_split_pos && ppTcpHdr->DstPort != htons(80)) {
                         unsigned int cuts[SPLIT_MAX];
@@ -2066,12 +2060,24 @@ int main(int argc, char *argv[]) {
                         if (cut_count > 0) {
                             if (do_tcp_verb)
                                 printf("Splitting a ClientHello of %u bytes into %d pieces\n", packet_dataLen, cut_count + 1);
-                            send_split(w_filter, addr, packet, packetLen, packet_data, packet_dataLen,
-                                       packet_v4, packet_v6, ppIpHdr, ppIpV6Hdr, ppTcpHdr,
-                                       cuts, cut_count, split_seqovl, do_reverse_frag);
+                            if (rec_len)
+                                send_split_rec(w_filter, addr, rec_packet, rec_len, packet_v4, packet_v6,
+                                               cuts, cut_count, rec_cut, split_seqovl, do_reverse_frag);
+                            else
+                                send_split(w_filter, addr, packet, packetLen, packet_data, packet_dataLen,
+                                           packet_v4, packet_v6, ppIpHdr, ppIpV6Hdr, ppTcpHdr,
+                                           cuts, cut_count, split_seqovl, do_reverse_frag);
                             flush_tx(w_filter);
                             continue;
                         }
+                    }
+                    if (rec_len) {
+                        addr.IPChecksum = 0;
+                        addr.TCPChecksum = 0;
+                        WinDivertHelperCalcChecksums(rec_packet, rec_len, &addr, 0);
+                        queue_tx(w_filter, rec_packet, rec_len, &addr);
+                        flush_tx(w_filter);
+                        continue;
                     }
                     current_fragment_size = 0;
                     if (do_fragment_http && ppTcpHdr->DstPort == htons(80)) {

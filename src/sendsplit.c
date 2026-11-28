@@ -152,3 +152,22 @@ UINT tls_record_split(char *out, const char *packet, UINT packetLen, UINT data_o
         ((PWINDIVERT_IPV6HDR)out)->Length = htons((UINT16)(ip_length + 5));
     return packetLen + 5;
 }
+
+void send_split_rec(HANDLE w_filter, WINDIVERT_ADDRESS addr, char *rec_packet, UINT rec_len,
+                    int packet_v4, int packet_v6, unsigned int *cuts, int count,
+                    unsigned int rec_cut, unsigned int seqovl, int reverse) {
+    PWINDIVERT_IPHDR ip = NULL;
+    PWINDIVERT_IPV6HDR ip6 = NULL;
+    PWINDIVERT_TCPHDR tcp = NULL;
+    PVOID data = NULL;
+    UINT data_len = 0;
+    int i;
+
+    for (i = 0; i < count; i++)
+        if (cuts[i] > rec_cut)
+            cuts[i] += 5;
+    if (WinDivertHelperParsePacket(rec_packet, rec_len, &ip, &ip6, NULL, NULL, NULL, &tcp, NULL,
+                                   &data, &data_len, NULL, NULL) && tcp)
+        send_split(w_filter, addr, rec_packet, rec_len, data, data_len, packet_v4, packet_v6,
+                   ip, ip6, tcp, cuts, count, seqovl, reverse);
+}

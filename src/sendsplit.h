@@ -30,4 +30,12 @@ void send_split(HANDLE w_filter, WINDIVERT_ADDRESS addr,
 UINT tls_record_split(char *out, const char *packet, UINT packetLen, UINT data_off,
                       UINT data_len, int packet_v4, unsigned int cut);
 
+/*
+ * send_split() for a packet made by tls_record_split(). The cuts were found in the data before the
+ * record was cut at rec_cut: those behind it are 5 bytes further now, and are moved here.
+ */
+void send_split_rec(HANDLE w_filter, WINDIVERT_ADDRESS addr, char *rec_packet, UINT rec_len,
+                    int packet_v4, int packet_v6, unsigned int *cuts, int count,
+                    unsigned int rec_cut, unsigned int seqovl, int reverse);
+
 #endif
