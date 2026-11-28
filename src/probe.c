@@ -18,6 +18,8 @@
  * Least intrusive first. The fixed TTL variants are mode -5 with a fake packet
  * that dies after N hops: the right N depends on how far away the ISP's DPI is,
  * so the probe measures it instead of guessing one number for everybody.
+ * The last three are the newer tricks (record cut, cuts inside the name, a fake
+ * without ACK); they only run when everything before them failed.
  */
 #define MODE5 "-f 2 -e 2 --reverse-frag --max-payload"
 static const struct {
@@ -34,6 +36,9 @@ static const struct {
     {"dns + ttl 4",        "--preset dns " MODE5 " --set-ttl 4"},
     {"dns + ttl 5",        "--preset dns " MODE5 " --set-ttl 5"},
     {"dns + ttl 6",        "--preset dns " MODE5 " --set-ttl 6"},
+    {"dns + tlsrec",       "--preset dns --tlsrec midsld"},
+    {"dns + split-pos",    "--preset dns --reverse-frag --split-pos 1,midsld"},
+    {"dns-5 + noack",      "--preset dns-5 --fake-noack"},
 };
 #define CANDIDATE_COUNT (sizeof(candidates) / sizeof(*candidates))
 #define NO_TOOL 0               /* indexes in candidates[] that probe() may skip */
