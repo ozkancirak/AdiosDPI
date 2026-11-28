@@ -426,8 +426,20 @@ static char* fast_memmem(const char* haystack, unsigned int hlen,
     return NULL;
 }
 
+/* A number option must be all digits: "abc" or "5x" is an error, not 0 or 5. */
+static unsigned long to_ulong(const char *str, const char *msg, int code) {
+    char *end;
+    unsigned long res = strtoul(str, &end, 10);
+
+    if (end == str || *end) {
+        puts(msg);
+        exit(code);
+    }
+    return res;
+}
+
 unsigned short int atousi(const char *str, const char *msg) {
-    long unsigned int res = strtoul(str, NULL, 10u);
+    long unsigned int res = to_ulong(str, msg, ERROR_ATOUSI);
     enum {
         limitValue=0xFFFFu
     };
@@ -440,7 +452,7 @@ unsigned short int atousi(const char *str, const char *msg) {
 }
 
 BYTE atoub(const char *str, const char *msg) {
-    long unsigned int res = strtoul(str, NULL, 10u);
+    long unsigned int res = to_ulong(str, msg, ERROR_AUTOB);
     enum {
         limitValue=0xFFu
     };
