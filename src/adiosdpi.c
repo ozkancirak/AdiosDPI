@@ -238,6 +238,15 @@ static struct option long_options[] = {
 static char *filter_string = NULL;
 static char *filter_passive_string = NULL;
 
+/* The filter is built in pieces; a failed allocation would leave a half built one, so stop instead. */
+static char *must(char *p) {
+    if (!p) {
+        puts("Out of memory.");
+        exit(ERROR_DEFAULT);
+    }
+    return p;
+}
+
 static void add_filter_str(int proto, int port) {
     const char *udp = " or (udp and !impostor and !loopback and " \
                       "(udp.SrcPort == %d or udp.DstPort == %d))";
@@ -247,7 +256,7 @@ static void add_filter_str(int proto, int port) {
     char *current_filter = filter_string;
     size_t new_filter_size = strlen(current_filter) +
             (proto == IPPROTO_UDP ? strlen(udp) : strlen(tcp)) + 16;
-    char *new_filter = malloc(new_filter_size);
+    char *new_filter = must(malloc(new_filter_size));
 
     strcpy(new_filter, current_filter);
     if (proto == IPPROTO_UDP)
@@ -337,15 +346,15 @@ static void add_quic_filter(void) {
 static void add_ip_id_str(int id) {
     char *newstr;
     const char *ipid = " or ip.Id == %d";
-    char *addfilter = malloc(strlen(ipid) + 16);
+    char *addfilter = must(malloc(strlen(ipid) + 16));
 
     sprintf(addfilter, ipid, id);
 
-    newstr = repl_str(filter_string, IPID_TEMPLATE, addfilter);
+    newstr = must(repl_str(filter_string, IPID_TEMPLATE, addfilter));
     free(filter_string);
     filter_string = newstr;
 
-    newstr = repl_str(filter_passive_string, IPID_TEMPLATE, addfilter);
+    newstr = must(repl_str(filter_passive_string, IPID_TEMPLATE, addfilter));
     free(filter_passive_string);
     filter_passive_string = newstr;
 }
@@ -357,11 +366,11 @@ static void add_maxpayloadsize_str(unsigned short maxpayload) {
         "and (tcp.PayloadLength ? tcp.PayloadLength < %hu " \
           "or tcp.Payload32[0] == 0x47455420 or tcp.Payload32[0] == 0x504F5354 " \
           "or (tcp.Payload[0] == 0x16 and tcp.Payload[1] == 0x03 and tcp.Payload[2] <= 0x03): true)";
-    char *addfilter = malloc(strlen(maxpayloadsize_str) + 16);
+    char *addfilter = must(malloc(strlen(maxpayloadsize_str) + 16));
 
     sprintf(addfilter, maxpayloadsize_str, maxpayload);
 
-    newstr = repl_str(filter_string, MAXPAYLOADSIZE_TEMPLATE, addfilter);
+    newstr = must(repl_str(filter_string, MAXPAYLOADSIZE_TEMPLATE, addfilter));
     free(filter_string);
     filter_string = newstr;
 }
@@ -376,7 +385,7 @@ struct filter_features {
 };
 
 static void replace_token(char **str, const char *token, const char *with) {
-    char *newstr = repl_str(*str, token, with);
+    char *newstr = must(repl_str(*str, token, with));
 
     free(*str);
     *str = newstr;
